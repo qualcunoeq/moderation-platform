@@ -1,93 +1,189 @@
+import OpenAI from 'openai';
 import { createClient } from '@supabase/supabase-js';
-import jwt from 'jsonwebtoken';
-import bcrypt from 'bcrypt'; // Importa bcrypt
+import jwt from 'jsonwebtoken'; // Assicurati che jsonwebtoken sia importato
 
-// Inizializza Supabase Client con la Service Role Key
-// Questa chiave ha i permessi per bypassare RLS e leggere la tabella api_clients
+// Inizializzazione OpenAI
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+});
+
+// Inizializzazione Supabase per i log (usa Service Role Key per accesso server-side)
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!; // Assicurati che sia la Service Role Key
 const supabase = createClient(supabaseUrl, supabaseServiceRoleKey);
 
-export async function POST(request: Request) {
-    try {
-        const { client_id, client_secret, grant_type } = await request.json();
+// Definizioni di tipo (assicurati che queste siano presenti nel tuo file)
+interface ModerationResponse {
+    flagged: boolean;
+    categories: {
+        sexual: boolean;
+        hate: boolean;
+        harassment: boolean;
+        "self-harm": boolean;
+        "sexual/minors": boolean;
+        violence: boolean;
+        "hate/threatening": boolean;
+        "harassment/threatening": boolean;
+        "self-harm/intent": boolean;
+        "self-harm/instructions": boolean;
+        "violence/graphic": boolean;
+    };
+    category_scores: {
+        sexual: number;
+        hate: number;
+        harassment: number;
+        "self-harm": number;
+        "sexual/minors": number;
+        violence: number;
+        "hate/threatening": number;
+        "harassment/threatening": number;
+        "self-harm/intent": number;
+        "self-harm/instructions": number;
+        "violence/graphic": number;
+    };
+}
 
-        // 1. Verifica il grant_type
-        if (grant_type !== 'client_credentials') {
-            return new Response(JSON.stringify({
-                error: 'unsupported_grant_type',
-                error_description: 'Only client_credentials grant type is supported.'
-            }), {
+// Interfaccia per il log nel database
+interface ModerationLog {
+    text_content: string;
+    flagged: boolean;
+    action: 'APPROVED' | 'BLOCKED';
+    severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | 'NONE'; // Aggiunto 'NONE' per chiarezza
+    categories: string[];
+    scores: Record<string, number>;
+    client_id?: string; // Aggiunto per tracciare il client che ha fatto la richiesta
+}
+
+export async function POST(request: Request) {
+    // 1. Verifica il Token OAuth 2.0 (Bearer Token)
+    const authHeader = request.headers.get('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return new Response(JSON.stringify({ error: 'unauthorized', message: 'Bearer token missing or malformed.' }), {
+            status: 401,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const jwtSecret = process.env.JWT_SECRET;
+
+    if (!jwtSecret) {
+        console.error('JWT_SECRET environment variable not configured.');
+        return new Response(JSON.stringify({ error: 'server_error', message: 'Server configuration error.' }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+
+    let clientIdFromToken: string | undefined;
+    try {
+        const decoded = jwt.verify(token, jwtSecret) as { client_id: string; scope: string; exp: number; iat: number; };
+        // Puoi aggiungere qui una logica per controllare gli 'scope' se li usi
+        if (decoded.scope !== 'moderate_content') { // Esempio di verifica scope
+            return new Response(JSON.stringify({ error: 'forbidden', message: 'Insufficient scope.' }), {
+                status: 403,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }
+        clientIdFromToken = decoded.client_id; // Ottieni il client_id dal token
+    } catch (err) {
+        console.error('Token verification error:', err);
+        return new Response(JSON.stringify({ error: 'invalid_token', message: 'Invalid or expired token.' }), {
+            status: 401,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+
+    // 2. Continua con la logica di moderazione esistente
+    try {
+        const { content } = await request.json();
+
+        if (!content) {
+            return new Response(JSON.stringify({ error: 'Bad Request', message: 'Content field is required.' }), {
                 status: 400,
                 headers: { 'Content-Type': 'application/json' },
             });
         }
 
-        // 2. Cerca il client nel database Supabase
-        const { data: client, error } = await supabase
-            .from('api_clients')
-            .select('client_id, client_secret_hash') // Seleziona solo ciò che serve
-            .eq('client_id', client_id)
-            .single();
+        const moderationResponse = await openai.moderations.create({
+            input: content,
+        });
 
-        if (error || !client) {
-            console.error('Client lookup error:', error?.message || 'Client not found.');
-            return new Response(JSON.stringify({
-                error: 'invalid_client',
-                error_description: 'Invalid client ID or client not found.'
-            }), {
-                status: 401,
-                headers: { 'Content-Type': 'application/json' },
+        const result: ModerationResponse = moderationResponse.results[0];
+
+        // Determina l'azione e la severità basate sul flagging di OpenAI
+        const flagged = result.flagged;
+        let action: 'APPROVED' | 'BLOCKED' = flagged ? 'BLOCKED' : 'APPROVED';
+
+        // Calcola la severità massima tra tutte le categorie segnalate
+        let severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | 'NONE' = 'NONE';
+        let maxScore = 0;
+        let flaggedCategories: string[] = [];
+
+        if (flagged) {
+            Object.keys(result.categories).forEach(key => {
+                const categoryKey = key as keyof ModerationResponse['categories'];
+                if (result.categories[categoryKey]) { // Se la categoria è flagged (true)
+                    flaggedCategories.push(categoryKey);
+                    const score = result.category_scores[categoryKey];
+                    if (score > maxScore) {
+                        maxScore = score;
+                    }
+                }
             });
+
+            // Determina la severità in base al punteggio più alto (esempio di logica)
+            if (maxScore >= 0.9) {
+                severity = 'CRITICAL';
+            } else if (maxScore >= 0.75) {
+                severity = 'HIGH';
+            } else if (maxScore >= 0.5) {
+                severity = 'MEDIUM';
+            } else {
+                severity = 'LOW';
+            }
         }
 
-        // 3. Verifica il client_secret confrontando l'hash
-        const isSecretValid = await bcrypt.compare(client_secret, client.client_secret_hash);
-
-        if (!isSecretValid) {
-            return new Response(JSON.stringify({
-                error: 'invalid_client',
-                error_description: 'Invalid client secret.'
-            }), {
-                status: 401,
-                headers: { 'Content-Type': 'application/json' },
-            });
+        // Determina un messaggio più descrittivo
+        let message: string;
+        if (flagged) {
+            message = `Content flagged for: ${flaggedCategories.join(', ')}. Severity: ${severity}.`;
+        } else {
+            message = 'Content approved. No issues detected.';
         }
 
-        // 4. Emetti l'Access Token JWT
-        const jwtSecret = process.env.JWT_SECRET;
-        if (!jwtSecret) {
-            console.error('JWT_SECRET environment variable not configured.');
-            return new Response(JSON.stringify({
-                error: 'server_error',
-                error_description: 'Server misconfiguration: JWT secret missing.'
-            }), {
-                status: 500,
-                headers: { 'Content-Type': 'application/json' },
-            });
-        }
+        // Salva il log della moderazione in Supabase
+        const logData: ModerationLog = {
+            text_content: content,
+            flagged,
+            action,
+            severity,
+            categories: flaggedCategories,
+            scores: result.category_scores,
+            client_id: clientIdFromToken, // Salva il client_id nel log
+        };
 
-        const accessToken = jwt.sign(
-            { client_id: client.client_id, scope: 'moderate_content' }, // Payload del token
-            jwtSecret,
-            { expiresIn: '1h' } // Il token scade dopo 1 ora
-        );
+        const { error: dbError } = await supabase.from('moderation_logs').insert([logData]);
+        if (dbError) {
+            console.error('Error saving moderation log to Supabase:', dbError);
+            // Non bloccare la risposta API per un errore di logging
+        }
 
         return new Response(JSON.stringify({
-            access_token: accessToken,
-            token_type: 'bearer',
-            expires_in: 3600 // Secondi (1 ora)
+            flagged,
+            action,
+            severity,
+            message,
+            categories: flaggedCategories,
+            scores: result.category_scores,
         }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
         });
 
     } catch (error: any) {
-        console.error('Error in token endpoint:', error);
-        return new Response(JSON.stringify({
-            error: 'internal_server_error',
-            error_description: error.message || 'An unexpected error occurred.'
-        }), {
+        console.error('Error during content moderation:', error);
+        return new Response(JSON.stringify({ error: 'Internal Server Error', message: error.message || 'An unexpected error occurred during moderation.' }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
         });
