@@ -26,7 +26,7 @@ export async function POST(request: Request) {
         // 2. Cerca il client nel database Supabase
         const { data: client, error } = await supabase
             .from('api_clients')
-            .select('client_id, client_secret_hash') // Seleziona solo ciò che serve
+            .select('client_id, client_secret_hash') // Seleziona solo ciÃ² che serve
             .eq('client_id', client_id)
             .single();
 
