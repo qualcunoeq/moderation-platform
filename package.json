@@ -10,6 +10,8 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.0.0",
+    "bcrypt": "^6.0.0",
+    "jsonwebtoken": "^9.0.2",
     "lucide-react": "^0.400.0",
     "next": "^14.0.0",
     "openai": "^4.0.0",
@@ -19,6 +21,8 @@
   "devDependencies": {
     "@eslint/eslintrc": "^2",
     "@tailwindcss/postcss": "^4",
+    "@types/bcrypt": "^5.0.2",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^20",
     "@types/react": "18.2.0",
     "@types/react-dom": "^18.2.0",
