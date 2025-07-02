@@ -1,15 +1,16 @@
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
-import bcrypt from 'bcrypt'; // Assicurati di importare bcrypt
+import bcrypt from 'bcrypt';
 
-// Inizializzazione Supabase per i client API (usa Service Role Key per accesso server-side)
+// Inizializzazione Supabase per i client API
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!; // Assicurati che sia la Service Role Key
+const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const supabase = createClient(supabaseUrl, supabaseServiceRoleKey);
 
-// JWT Secret (deve essere configurato come variabile d'ambiente su Vercel)
+// JWT Secret
 const jwtSecret = process.env.JWT_SECRET;
 
+// QUESTA È LA FUNZIONE CRUCIALE CHE DEVE ESSERE ESATTAMENTE COSÌ
 export async function POST(request: Request) {
   if (!jwtSecret) {
     console.error('JWT_SECRET environment variable not configured.');
@@ -22,7 +23,6 @@ export async function POST(request: Request) {
   try {
     const { client_id, client_secret, grant_type } = await request.json();
 
-    // 1. Verifica i campi richiesti
     if (!client_id || !client_secret || grant_type !== 'client_credentials') {
       return new Response(JSON.stringify({ error: 'invalid_request', message: 'Missing parameters or invalid grant_type.' }), {
         status: 400,
@@ -30,7 +30,6 @@ export async function POST(request: Request) {
       });
     }
 
-    // 2. Recupera il client dal database Supabase
     const { data: clients, error } = await supabase
       .from('api_clients')
       .select('client_id, client_secret_hash')
@@ -53,8 +52,6 @@ export async function POST(request: Request) {
 
     const client = clients[0];
 
-    // 3. Verifica il client_secret usando bcrypt.compare
-    // Questa è la riga cruciale che confronta il secret fornito con l'hash memorizzato.
     const isValidSecret = await bcrypt.compare(client_secret, client.client_secret_hash);
 
     if (!isValidSecret) {
@@ -64,11 +61,10 @@ export async function POST(request: Request) {
       });
     }
 
-    // 4. Se le credenziali sono valide, genera il JWT
-    const expiresIn = 3600; // 1 ora
+    const expiresIn = 3600;
 
     const accessToken = jwt.sign(
-      { client_id: client.client_id, scope: 'moderate_content' }, // Puoi espandere gli scope se necessario
+      { client_id: client.client_id, scope: 'moderate_content' },
       jwtSecret,
       { expiresIn: expiresIn }
     );
