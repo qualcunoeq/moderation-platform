@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs'; // <-- Modificato da 'bcrypt' a 'bcryptjs'
 
 // Inizializzazione Supabase per i client API
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
@@ -52,6 +52,7 @@ export async function POST(request: Request) {
 
     const client = clients[0];
 
+    // La logica di confronto rimane la stessa, solo l'importazione è cambiata
     const isValidSecret = await bcrypt.compare(client_secret, client.client_secret_hash);
 
     if (!isValidSecret) {
