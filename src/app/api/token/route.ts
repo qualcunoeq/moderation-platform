@@ -6,8 +6,6 @@ import OpenAI from 'openai';
 import jwt from 'jsonwebtoken';
 
 // --- Configurazione Variabili d'Ambiente ---
-// È buona pratica controllare la presenza delle variabili d'ambiente all'avvio o prima dell'uso.
-
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -37,7 +35,7 @@ if (!jwtSecret) {
 
 export async function POST(request: Request) {
     console.log('--- API Moderate Request Received ---');
-    console.log('Request Method:', request.method); // Log del metodo HTTP
+    console.log('Request Method:', request.method);
     console.log('Request Headers:', request.headers);
     console.log('Content-Type Header:', request.headers.get('Content-Type'));
 
@@ -64,8 +62,8 @@ export async function POST(request: Request) {
 
     // --- 2. Verifica e decodifica il token JWT ---
     try {
-        const decoded = jwt.verify(token, jwtSecret) as { client_id?: string; scope?: string }; // client_id reso opzionale per robustezza
-        client_id = decoded.client_id; // Assegna il client_id se presente
+        const decoded = jwt.verify(token, jwtSecret) as { client_id?: string; scope?: string };
+        client_id = decoded.client_id;
 
         if (!decoded.client_id || decoded.scope !== 'moderate_content') {
             console.error(`Error: Token valid but lacks necessary scope or client_id. Decoded: ${JSON.stringify(decoded)}. Status: 403`);
@@ -110,18 +108,18 @@ export async function POST(request: Request) {
         }
     }
 
-    if (!text || typeof text !== 'string' || text.trim().length === 0) { // Aggiunto controllo per testo vuoto
+    if (!text || typeof text !== 'string' || text.trim().length === 0) {
         console.error(`Error: Missing, invalid, or empty "text" field. Received: ${JSON.stringify(text)}. Status: 400`);
         return new Response(JSON.stringify({ error: 'invalid_input', message: 'Missing, invalid, or empty "text" field in request body.' }), {
             status: 400,
             headers: { 'Content-Type': 'application/json' },
         });
     }
-    console.log(`Successfully extracted text for moderation (length: ${text.length}): "${text.substring(0, 50)}..."`); // Logga i primi 50 caratteri
+    console.log(`Successfully extracted text for moderation (length: ${text.length}): "${text.substring(0, 50)}..."`);
 
     // --- 4. Invia il testo all'API di moderazione di OpenAI ---
     try {
-        if (!openai) { // Controlla se l'istanza di OpenAI è stata creata
+        if (!openai) {
             console.error('Server Error: OpenAI API client not initialized due to missing API key. Status: 500');
             return new Response(JSON.stringify({ error: 'server_error', message: 'OpenAI API key not configured on server.' }), {
                 status: 500,
@@ -129,22 +127,25 @@ export async function POST(request: Request) {
             });
         }
 
-        console.log('Calling OpenAI Moderation API...');
+        // NUOVI LOG CRUCIALI QUI
+        console.log(`OpenAI API Key: ${openaiApiKey ? 'Configured' : 'NOT Configured'}`);
+        console.log(`Attempting OpenAI Moderation with input type: ${typeof text}, length: ${text?.length || 0}, content: "${text?.substring(0, 100)}..."`);
+
         const moderationResponse = await openai.moderations.create({
-            input: text,
+            input: text as string, // Forziamo il tipo a string per sicurezza
         });
         console.log('OpenAI Moderation API response received.');
 
         const moderationResult = moderationResponse.results[0];
 
         // --- 5. Opzionale: Salva i risultati di moderazione su Supabase (per auditing) ---
-        if (supabase && client_id) { // Esegue il log solo se Supabase è configurato e client_id è disponibile
+        if (supabase && client_id) {
             const { data, error: dbError } = await supabase.from('moderation_logs').insert([
                 {
-                    client_id: client_id, // Usa il client_id estratto
+                    client_id: client_id,
                     text_input: text,
                     moderation_result: moderationResult,
-                    flagged: moderationResult.flagged // Aggiungi un campo "flagged" per query più semplici
+                    flagged: moderationResult.flagged
                 },
             ]);
             if (dbError) {
@@ -158,14 +159,13 @@ export async function POST(request: Request) {
             console.warn('Client ID not available, skipping moderation log to Supabase.');
         }
 
-
         // --- 6. Restituisci il risultato della moderazione ---
         console.log(`Moderation complete. Flagged: ${moderationResult.flagged}. Status: 200`);
         return new Response(JSON.stringify({
             moderation_status: moderationResult.flagged ? 'flagged' : 'not_flagged',
             categories: moderationResult.categories,
             category_scores: moderationResult.category_scores,
-            // full_result: moderationResult, // Puoi decidere di restituire o meno l'intero oggetto per ragioni di dimensione/privacy
+            // full_result: moderationResult,
         }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -173,8 +173,6 @@ export async function POST(request: Request) {
 
     } catch (openaiError: any) {
         console.error(`Error calling OpenAI Moderation API: ${openaiError.message}. Status: 500`);
-        // Logga l'errore completo se vuoi più dettagli (utile in sviluppo)
-        // console.error('Full OpenAI error object:', openaiError);
         return new Response(JSON.stringify({ error: 'openai_error', message: openaiError.message || 'Failed to moderate text with OpenAI.' }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
