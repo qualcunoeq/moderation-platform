@@ -20,12 +20,14 @@ const jwtSecret = process.env.JWT_SECRET!;
 // ---
 
 export async function POST(request: Request) {
-    console.log('API Moderate Request Received.'); // Aggiunto: log all'inizio della richiesta
-    console.log('Request Headers:', request.headers); // Aggiunto: log degli header della richiesta
+    console.log('API Moderate Request Received.');
+    console.log('Request Headers:', request.headers);
+    console.log('Content-Type Header:', request.headers.get('Content-Type')); // Aggiunto: Log del Content-Type
 
     // 1. Verifica la presenza del token JWT nell'header Authorization
     const authHeader = request.headers.get('Authorization');
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        console.error('Missing or invalid Authorization header.'); // Log per 401
         return new Response(JSON.stringify({ error: 'unauthorized', message: 'Missing or invalid Authorization header.' }), {
             status: 401,
             headers: { 'Content-Type': 'application/json' },
@@ -41,11 +43,13 @@ export async function POST(request: Request) {
         // E decoded.scope per verificare se ha i permessi necessari (es. 'moderate_content')
 
         if (!decoded.client_id || decoded.scope !== 'moderate_content') {
+            console.error('Token is valid but lacks necessary scope:', decoded); // Log per 403
             return new Response(JSON.stringify({ error: 'forbidden', message: 'Token is valid but lacks necessary scope.' }), {
                 status: 403,
                 headers: { 'Content-Type': 'application/json' },
             });
         }
+        console.log('JWT successfully verified for client_id:', decoded.client_id); // Log di successo JWT
 
     } catch (jwtError: any) {
         console.error('JWT verification failed:', jwtError);
@@ -56,28 +60,41 @@ export async function POST(request: Request) {
     }
 
     // 3. Ricevi il testo da moderare dal corpo della richiesta
-    let requestBody;
+    let requestBody: any;
+    let text: string | undefined; // Dichiarazione della variabile text
+
     try {
+        // Tenta prima il parsing JSON standard
         requestBody = await request.json();
-        console.log('Parsed Request Body:', requestBody); // Aggiunto: log del corpo della richiesta parsato
+        console.log('Parsed Request Body (via request.json()):', requestBody);
+        text = requestBody?.text; // Accedi alla proprietà 'text'
+
     } catch (jsonError) {
-        console.error('Failed to parse JSON body:', jsonError); // Aggiunto: log in caso di fallimento del parsing JSON
-        return new Response(JSON.stringify({ error: 'invalid_json', message: 'Request body must be valid JSON.' }), {
-            status: 400,
-            headers: { 'Content-Type': 'application/json' },
-        });
+        // Se fallisce, prova a leggere come testo e parsare manualmente
+        console.warn('Could not parse JSON directly. Attempting to read as text and parse:', jsonError);
+        try {
+            const rawBody = await request.text();
+            console.log('Raw Request Body:', rawBody); // Log del corpo RAW
+            requestBody = JSON.parse(rawBody); // Parsing manuale
+            console.log('Parsed Request Body (via JSON.parse(raw)):', requestBody);
+            text = requestBody?.text;
+        } catch (fallbackError) {
+            console.error('Failed to parse body even with fallback:', fallbackError); // Log errore fallback
+            return new Response(JSON.stringify({ error: 'invalid_json', message: 'Request body must be valid JSON.' }), {
+                status: 400,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }
     }
 
-    const { text } = requestBody;
-    console.log('Extracted text field:', text); // Aggiunto: log del campo 'text' estratto
-
     if (!text || typeof text !== 'string') {
-        console.error('Missing or invalid "text" field:', text); // Aggiunto: log in caso di campo 'text' mancante o non valido
+        console.error('Missing or invalid "text" field:', text); // Log per campo 'text' mancante/non valido
         return new Response(JSON.stringify({ error: 'invalid_input', message: 'Missing or invalid "text" field in request body.' }), {
             status: 400,
             headers: { 'Content-Type': 'application/json' },
         });
     }
+    console.log('Successfully extracted text for moderation:', text); // Log di successo dell'estrazione del testo
 
     // 4. Invia il testo all'API di moderazione di OpenAI
     try {
@@ -89,9 +106,11 @@ export async function POST(request: Request) {
             });
         }
 
+        console.log('Calling OpenAI Moderation API...'); // Log prima della chiamata OpenAI
         const moderationResponse = await openai.moderations.create({
             input: text,
         });
+        console.log('OpenAI Moderation API response received.'); // Log dopo la risposta OpenAI
 
         const moderationResult = moderationResponse.results[0]; // Prende il primo (e unico) risultato
 
@@ -117,7 +136,7 @@ export async function POST(request: Request) {
         });
 
     } catch (openaiError: any) {
-        console.error('Error calling OpenAI Moderation API:', openaiError);
+        console.error('Error calling OpenAI Moderation API:', openaiError); // Log per errori OpenAI
         return new Response(JSON.stringify({ error: 'openai_error', message: openaiError.message || 'Failed to moderate text with OpenAI.' }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
