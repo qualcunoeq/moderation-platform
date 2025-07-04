@@ -1,179 +1,124 @@
-// src/app/api/moderate/route.ts
+// src/app/api/token/route.ts
 
-// Imports necessari
+import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import OpenAI from 'openai';
 import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs'; // Assicurati di aver installato 'bcryptjs' (npm install bcryptjs)
 
-// --- Configurazione Variabili d'Ambiente ---
+// --- Environment Variable Configuration ---
+// These variables should be set in your .env.local file and Vercel environment variables.
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const jwtSecret = process.env.JWT_SECRET;
 
-// Inizializzazione Supabase (solo se le chiavi sono presenti)
+// Initialize Supabase client (using the service_role key for server-side operations)
 let supabase: ReturnType<typeof createClient> | undefined;
 if (supabaseUrl && supabaseServiceRoleKey) {
     supabase = createClient(supabaseUrl, supabaseServiceRoleKey);
 } else {
-    console.warn('Supabase environment variables not fully configured. Supabase logging will be skipped.');
+    console.error('Supabase environment variables (NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) are not fully configured for the Token API. Cannot connect to DB.');
+    // In a production app, you might want to throw an error or exit here if DB is essential.
 }
 
-const openaiApiKey = process.env.OPENAI_API_KEY;
-// Inizializzazione OpenAI (solo se la chiave è presente)
-let openai: OpenAI | undefined;
-if (openaiApiKey) {
-    openai = new OpenAI({ apiKey: openaiApiKey });
-} else {
-    console.error('OPENAI_API_KEY environment variable is missing. OpenAI API calls will fail.');
-}
-
-const jwtSecret = process.env.JWT_SECRET;
+// Check if JWT_SECRET is configured at startup
 if (!jwtSecret) {
-    console.error('JWT_SECRET environment variable is missing. JWT verification will fail.');
+    console.error('JWT_SECRET environment variable is missing. JWT generation will fail.');
+    // This is a critical error: without a secret, tokens cannot be signed securely.
 }
 
-// --- Funzione Principale della Route POST ---
-
-export async function POST(request: Request) {
-    console.log('--- API Moderate Request Received ---');
+// --- Main POST Request Handler for /api/token ---
+export async function POST(request: NextRequest) {
+    console.log('--- API Token Request Received ---');
     console.log('Request Method:', request.method);
-    console.log('Request Headers:', request.headers);
     console.log('Content-Type Header:', request.headers.get('Content-Type'));
 
-    // --- 1. Verifica il Token JWT nell'header Authorization ---
-    const authHeader = request.headers.get('Authorization');
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        console.error('Error: Missing or invalid Authorization header. Status: 401');
-        return new Response(JSON.stringify({ error: 'unauthorized', message: 'Missing or invalid Authorization header.' }), {
-            status: 401,
-            headers: { 'Content-Type': 'application/json' },
-        });
-    }
-
+    // 1. Validate JWT_SECRET configuration
     if (!jwtSecret) {
-        console.error('Server Error: JWT_SECRET not configured. Cannot verify token. Status: 500');
-        return new Response(JSON.stringify({ error: 'server_error', message: 'Server configuration error.' }), {
+        console.error('Server Error: JWT_SECRET not configured. Cannot generate token. Status: 500');
+        return NextResponse.json({ error: 'server_error', message: 'Server configuration error.' }, {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
         });
     }
 
-    const token = authHeader.split(' ')[1];
-    let client_id: string | undefined;
-
-    // --- 2. Verifica e decodifica il token JWT ---
-    try {
-        const decoded = jwt.verify(token, jwtSecret) as { client_id?: string; scope?: string };
-        client_id = decoded.client_id;
-
-        if (!decoded.client_id || decoded.scope !== 'moderate_content') {
-            console.error(`Error: Token valid but lacks necessary scope or client_id. Decoded: ${JSON.stringify(decoded)}. Status: 403`);
-            return new Response(JSON.stringify({ error: 'forbidden', message: 'Token is valid but lacks necessary scope.' }), {
-                status: 403,
-                headers: { 'Content-Type': 'application/json' },
-            });
-        }
-        console.log(`JWT successfully verified for client_id: ${decoded.client_id}.`);
-
-    } catch (jwtError: any) {
-        console.error(`JWT verification failed: ${jwtError.message}. Status: 401`);
-        return new Response(JSON.stringify({ error: 'unauthorized', message: 'Invalid or expired token.' }), {
-            status: 401,
-            headers: { 'Content-Type': 'application/json' },
-        });
-    }
-
-    // --- 3. Ricevi il testo da moderare dal corpo della richiesta ---
-    let requestBody: any;
-    let text: string | undefined;
-
+    // 2. Parse the request body for credentials
+    let requestBody;
     try {
         requestBody = await request.json();
-        console.log('Parsed Request Body (via request.json()):', requestBody);
-        text = requestBody?.text;
-
     } catch (jsonError: any) {
-        console.warn(`Warning: Could not parse JSON directly. Attempting to read as text and parse. Error: ${jsonError.message}`);
-        try {
-            const rawBody = await request.text();
-            console.log('Raw Request Body (for fallback parsing):', rawBody);
-            requestBody = JSON.parse(rawBody);
-            console.log('Parsed Request Body (via JSON.parse(raw)):', requestBody);
-            text = requestBody?.text;
-        } catch (fallbackError: any) {
-            console.error(`Error: Failed to parse body even with fallback. Error: ${fallbackError.message}. Status: 400`);
-            return new Response(JSON.stringify({ error: 'invalid_json', message: 'Request body must be valid JSON.' }), {
-                status: 400,
-                headers: { 'Content-Type': 'application/json' },
-            });
-        }
-    }
-
-    if (!text || typeof text !== 'string' || text.trim().length === 0) {
-        console.error(`Error: Missing, invalid, or empty "text" field. Received: ${JSON.stringify(text)}. Status: 400`);
-        return new Response(JSON.stringify({ error: 'invalid_input', message: 'Missing, invalid, or empty "text" field in request body.' }), {
+        console.error(`Error parsing request body for /api/token: ${jsonError.message}. Status: 400`);
+        return NextResponse.json({ error: 'invalid_json', message: 'Request body must be valid JSON.' }, {
             status: 400,
             headers: { 'Content-Type': 'application/json' },
         });
     }
-    console.log(`Successfully extracted text for moderation (length: ${text.length}): "${text.substring(0, 50)}..."`);
 
-    // --- 4. Invia il testo all'API di moderazione di OpenAI ---
+    const { client_id, client_secret, grant_type } = requestBody;
+
+    // 3. Input Validation
+    // Ensure client_id, client_secret are strings and grant_type is 'client_credentials'
+    if (!client_id || typeof client_id !== 'string' ||
+        !client_secret || typeof client_secret !== 'string' ||
+        grant_type !== 'client_credentials') { // The 'grant_type' is a standard OAuth2 parameter
+        console.error(`Invalid input for /api/token. Received: client_id=${client_id}, grant_type=${grant_type}. Status: 400`);
+        return NextResponse.json({ error: 'invalid_request', message: 'Missing or invalid client_id, client_secret, or grant_type.' }, {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+
+    // 4. Connect to Supabase
+    if (!supabase) {
+        console.error('Server Error: Supabase client not initialized. Status: 500');
+        return NextResponse.json({ error: 'server_error', message: 'Database connection not available.' }, {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+
+    // 5. Retrieve client_secret_hash from the database
     try {
-        if (!openai) {
-            console.error('Server Error: OpenAI API client not initialized due to missing API key. Status: 500');
-            return new Response(JSON.stringify({ error: 'server_error', message: 'OpenAI API key not configured on server.' }), {
-                status: 500,
+        const { data, error: dbError } = await supabase
+            .from('api_clients') // Your Supabase table name for API clients
+            .select('client_secret_hash, scope')
+            .eq('client_id', client_id)
+            .single(); // Expecting a single result
+
+        if (dbError || !data) {
+            console.warn(`Authentication failed for client_id: ${client_id}. No client found or DB error: ${dbError?.message}`);
+            return NextResponse.json({ error: 'unauthorized', message: 'Invalid client credentials.' }, {
+                status: 401,
                 headers: { 'Content-Type': 'application/json' },
             });
         }
 
-        // NUOVI LOG CRUCIALI QUI
-        console.log(`OpenAI API Key: ${openaiApiKey ? 'Configured' : 'NOT Configured'}`);
-        console.log(`Attempting OpenAI Moderation with input type: ${typeof text}, length: ${text?.length || 0}, content: "${text?.substring(0, 100)}..."`);
+        // 6. Compare the provided client_secret with the stored hash
+        const isPasswordValid = await bcrypt.compare(client_secret, data.client_secret_hash);
 
-        const moderationResponse = await openai.moderations.create({
-            input: text as string, // Forziamo il tipo a string per sicurezza
-        });
-        console.log('OpenAI Moderation API response received.');
-
-        const moderationResult = moderationResponse.results[0];
-
-        // --- 5. Opzionale: Salva i risultati di moderazione su Supabase (per auditing) ---
-        if (supabase && client_id) {
-            const { data, error: dbError } = await supabase.from('moderation_logs').insert([
-                {
-                    client_id: client_id,
-                    text_input: text,
-                    moderation_result: moderationResult,
-                    flagged: moderationResult.flagged
-                },
-            ]);
-            if (dbError) {
-                console.error('Error saving moderation log to Supabase:', dbError);
-            } else {
-                console.log('Moderation log saved to Supabase:', data);
-            }
-        } else if (!supabase) {
-            console.warn('Supabase not initialized, skipping moderation log.');
-        } else if (!client_id) {
-            console.warn('Client ID not available, skipping moderation log to Supabase.');
+        if (!isPasswordValid) {
+            console.warn(`Authentication failed for client_id: ${client_id}. Incorrect secret.`);
+            return NextResponse.json({ error: 'unauthorized', message: 'Invalid client credentials.' }, {
+                status: 401,
+                headers: { 'Content-Type': 'application/json' },
+            });
         }
 
-        // --- 6. Restituisci il risultato della moderazione ---
-        console.log(`Moderation complete. Flagged: ${moderationResult.flagged}. Status: 200`);
-        return new Response(JSON.stringify({
-            moderation_status: moderationResult.flagged ? 'flagged' : 'not_flagged',
-            categories: moderationResult.categories,
-            category_scores: moderationResult.category_scores,
-            // full_result: moderationResult,
-        }), {
+        // 7. Generate the JWT
+        const accessToken = jwt.sign(
+            { client_id: client_id, scope: data.scope }, // Payload for the token
+            jwtSecret, // Secret key for signing the token
+            { expiresIn: '1h' } // Token valid for 1 hour
+        );
+
+        console.log(`Token successfully issued for client_id: ${client_id}`);
+        return NextResponse.json({ access_token: accessToken, token_type: 'Bearer', expires_in: 3600 }, {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
         });
 
-    } catch (openaiError: any) {
-        console.error(`Error calling OpenAI Moderation API: ${openaiError.message}. Status: 500`);
-        return new Response(JSON.stringify({ error: 'openai_error', message: openaiError.message || 'Failed to moderate text with OpenAI.' }), {
+    } catch (error: any) {
+        console.error(`Internal server error during token generation: ${error.message}`);
+        return NextResponse.json({ error: 'server_error', message: 'An internal server error occurred.' }, {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
         });
