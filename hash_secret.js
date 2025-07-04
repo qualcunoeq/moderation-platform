@@ -1,7 +1,7 @@
 // hashSecret.js
 const bcrypt = require('bcryptjs'); // Assicurati che bcryptjs sia installato (npm install bcryptjs)
 
-const clientSecretToHash = "8cXOpxJtuBL7v32Yi61kgbfQVNRrlUoI"; // <-- SOSTITUISCI QUESTO
+const clientSecretToHash = "my_new_secure_client_secret_12345!"; // <-- SOSTITUISCI QUESTO
 
 async function hashClientSecret() {
     try {

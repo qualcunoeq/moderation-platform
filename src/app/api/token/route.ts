@@ -5,8 +5,15 @@ import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs'; // Assicurati di aver installato 'bcryptjs' (npm install bcryptjs)
 
+// --- Define an interface for the expected data structure from the api_clients table ---
+// This helps TypeScript understand the shape of the data returned by Supabase
+interface ApiClientData {
+    client_secret_hash: string;
+    scope: string;
+    // Add other fields if you select them, e.g., id?: string; client_id?: string;
+}
+
 // --- Environment Variable Configuration ---
-// These variables should be set in your .env.local file and Vercel environment variables.
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const jwtSecret = process.env.JWT_SECRET;
@@ -78,11 +85,12 @@ export async function POST(request: NextRequest) {
 
     // 5. Retrieve client_secret_hash from the database
     try {
+        // Explicitly type the data returned from Supabase
         const { data, error: dbError } = await supabase
             .from('api_clients') // Your Supabase table name for API clients
             .select('client_secret_hash, scope')
             .eq('client_id', client_id)
-            .single(); // Expecting a single result
+            .single<ApiClientData>(); // <-- Use .single<ApiClientData>() here for type safety
 
         if (dbError || !data) {
             console.warn(`Authentication failed for client_id: ${client_id}. No client found or DB error: ${dbError?.message}`);
@@ -92,7 +100,7 @@ export async function POST(request: NextRequest) {
             });
         }
 
-        // 6. Compare the provided client_secret with the stored hash
+        // Now TypeScript knows 'data' is of type ApiClientData, so 'data.client_secret_hash' is a string
         const isPasswordValid = await bcrypt.compare(client_secret, data.client_secret_hash);
 
         if (!isPasswordValid) {
