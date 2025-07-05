@@ -1,4 +1,4 @@
-    // src/app/api/clients/[client_id]/route.ts
+    // src/app/api/clients/[client_id]/route.ts wee
 
     import { NextRequest, NextResponse } from 'next/server';
     import { createClient } from '@supabase/supabase-js';
