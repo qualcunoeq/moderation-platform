@@ -1,127 +1,131 @@
-// src/app/api/clients/route.ts
+// src/app/api/token/route.ts
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import bcrypt from 'bcryptjs';
-import crypto from 'crypto'; // Modulo Node.js per la generazione di stringhe casuali
+import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs'; // Assicurati di aver installato 'bcryptjs' (npm install bcryptjs)
 
-// --- Configurazione Variabili d'Ambiente ---
+// --- Define an interface for the expected data structure from the api_clients table ---
+// Questo aiuta TypeScript a capire la forma dei dati restituiti da Supabase.
+interface ApiClientData {
+    client_secret_hash: string;
+    scope: string;
+    // Aggiungi altri campi se li selezioni, es. id?: string; client_id?: string;
+}
+
+// --- Environment Variable Configuration ---
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const masterApiKey = process.env.MASTER_API_KEY; // NUOVA VARIABILE D'AMBIENTE PER PROTEGGERE QUESTO ENDPOINT
+const jwtSecret = process.env.JWT_SECRET;
 
-// Inizializza il client Supabase (usando la chiave service_role per operazioni lato server)
+// Initialize Supabase client (using the service_role key for server-side operations)
 let supabase: ReturnType<typeof createClient> | undefined;
 if (supabaseUrl && supabaseServiceRoleKey) {
     supabase = createClient(supabaseUrl, supabaseServiceRoleKey);
 } else {
-    console.error('Variabili d\'ambiente Supabase non completamente configurate per la gestione client API.');
+    console.error('Le variabili d\'ambiente Supabase (NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) non sono completamente configurate per l\'API Token. Impossibile connettersi al DB.');
+    // In un'applicazione di produzione, potresti voler lanciare un errore o uscire qui se il DB è essenziale.
 }
 
-// Verifica se la chiave API master è configurata all\'avvio
-if (!masterApiKey) {
-    console.error('La variabile d\'ambiente MASTER_API_KEY è mancante. L\'endpoint di gestione client non sarà protetto.');
+// Check if JWT_SECRET is configured at startup
+if (!jwtSecret) {
+    console.error('La variabile d\'ambiente JWT_SECRET è mancante. La generazione del JWT fallirà.');
+    // Questo è un errore critico: senza un secret, i token non possono essere firmati in modo sicuro.
 }
 
-// --- Funzione Helper per Generare un Secret Casuale ---
-function generateRandomSecret(length: number = 32): string {
-    return crypto.randomBytes(Math.ceil(length / 2)).toString('hex').slice(0, length);
-}
-
-// --- Handler per le richieste POST (Creazione di un nuovo client API) ---
+// --- Main POST Request Handler for /api/token ---
 export async function POST(request: NextRequest) {
-    console.log('--- Richiesta di Creazione Client API Ricevuta ---');
+    console.log('--- Richiesta Token API Ricevuta ---');
+    console.log('Metodo Richiesta:', request.method);
+    console.log('Header Content-Type:', request.headers.get('Content-Type'));
 
-    // 1. Autenticazione con Chiave API Master
-    const authHeader = request.headers.get('Authorization');
-    if (!authHeader || !authHeader.startsWith('Bearer ') || authHeader.split(' ')[1] !== masterApiKey) {
-        console.warn('Tentativo di accesso non autorizzato all\'endpoint di gestione client.');
-        return NextResponse.json({ error: 'unauthorized', message: 'Accesso non autorizzato. Chiave API Master mancante o non valida.' }, {
-            status: 401,
+    // 1. Validate JWT_SECRET configuration
+    if (!jwtSecret) {
+        console.error('Errore Server: JWT_SECRET non configurato. Impossibile generare il token. Stato: 500');
+        return NextResponse.json({ error: 'server_error', message: 'Errore di configurazione del server.' }, {
+            status: 500,
             headers: { 'Content-Type': 'application/json' },
         });
     }
 
-    // 2. Parsifica il corpo della richiesta
+    // 2. Parse the request body for credentials
     let requestBody;
     try {
         requestBody = await request.json();
     } catch (jsonError: any) {
-        console.error(`Errore durante il parsing del corpo della richiesta: ${jsonError.message}`);
+        console.error(`Errore durante il parsing del corpo della richiesta per /api/token: ${jsonError.message}. Stato: 400`);
         return NextResponse.json({ error: 'invalid_json', message: 'Il corpo della richiesta deve essere JSON valido.' }, {
             status: 400,
             headers: { 'Content-Type': 'application/json' },
         });
     }
 
-    const { client_id, scope = 'default' } = requestBody; // 'scope' è opzionale, default 'default'
+    const { client_id, client_secret, grant_type } = requestBody;
 
-    // 3. Validazione dell'input
-    if (!client_id || typeof client_id !== 'string') {
-        console.warn('Input non valido: client_id mancante o non è una stringa.');
-        return NextResponse.json({ error: 'invalid_request', message: 'Il campo client_id è richiesto e deve essere una stringa.' }, {
+    // 3. Input Validation
+    // Assicurati che client_id, client_secret siano stringhe e grant_type sia 'client_credentials'
+    if (!client_id || typeof client_id !== 'string' ||
+        !client_secret || typeof client_secret !== 'string' ||
+        grant_type !== 'client_credentials') { // Il 'grant_type' è un parametro standard OAuth2
+        console.error(`Input non valido per /api/token. Ricevuto: client_id=${client_id}, grant_type=${grant_type}. Stato: 400`);
+        return NextResponse.json({ error: 'invalid_request', message: 'client_id, client_secret o grant_type mancanti o non validi.' }, {
             status: 400,
             headers: { 'Content-Type': 'application/json' },
         });
     }
 
-    // 4. Verifica connessione Supabase
+    // 4. Connect to Supabase
     if (!supabase) {
-        console.error('Errore del server: Client Supabase non inizializzato.');
+        console.error('Errore Server: Client Supabase non inizializzato. Stato: 500');
         return NextResponse.json({ error: 'server_error', message: 'Connessione al database non disponibile.' }, {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
         });
     }
 
+    // 5. Retrieve client_secret_hash from the database
     try {
-        // 5. Genera un nuovo client_secret e il suo hash
-        const newClientSecret = generateRandomSecret(48); // Genera un secret di 48 caratteri
-        const saltRounds = 10; // Cost factor per bcrypt, deve corrispondere a quello usato per la verifica
-        const clientSecretHash = await bcrypt.hash(newClientSecret, saltRounds);
-
-        // 6. Inserisci il nuovo client nel database
+        // Tipizza esplicitamente i dati restituiti da Supabase
         const { data, error: dbError } = await supabase
-            .from('api_clients')
-            .insert({
-                client_id: client_id,
-                client_secret_hash: clientSecretHash,
-                scope: scope,
-            })
-            .select(); // Usa .select() per ottenere i dati inseriti, se necessario
+            .from('api_clients') // Nome della tua tabella Supabase per i client API
+            .select('client_secret_hash, scope')
+            .eq('client_id', client_id)
+            .single<ApiClientData>(); // <-- Usa .single<ApiClientData>() qui per la sicurezza del tipo
 
-        if (dbError) {
-            console.error(`Errore database durante l'inserimento del client ${client_id}:`, dbError);
-            if (dbError.code === '23505') { // Codice per violazione di chiave unica (client_id già esistente)
-                return NextResponse.json({ error: 'duplicate_client', message: 'Il client_id specificato esiste già.' }, {
-                    status: 409, // Conflict
-                    headers: { 'Content-Type': 'application/json' },
-                });
-            }
-            return NextResponse.json({ error: 'database_error', message: 'Errore durante la registrazione del client API.' }, {
-                status: 500,
+        if (dbError || !data) {
+            console.warn(`Autenticazione fallita per client_id: ${client_id}. Nessun client trovato o errore DB: ${dbError?.message}`);
+            return NextResponse.json({ error: 'unauthorized', message: 'Credenziali client non valide.' }, {
+                status: 401,
                 headers: { 'Content-Type': 'application/json' },
             });
         }
 
-        console.log(`Client API '${client_id}' registrato con successo.`);
+        // Ora TypeScript sa che 'data' è di tipo ApiClientData, quindi 'data.client_secret_hash' è una stringa
+        const isPasswordValid = await bcrypt.compare(client_secret, data.client_secret_hash);
 
-        // 7. Restituisci il client_id e il client_secret (in chiaro) al chiamante
-        // IMPORTANTE: Questo è l'UNICO momento in cui il client_secret in chiaro dovrebbe essere esposto.
-        // Assicurati che questo endpoint sia ben protetto!
-        return NextResponse.json({
-            success: true,
-            message: 'Client API creato con successo.',
-            client_id: client_id,
-            client_secret: newClientSecret, // Restituisce il secret in chiaro
-            scope: scope,
-        }, {
-            status: 201, // Created
+        if (!isPasswordValid) {
+            console.warn(`Autenticazione fallita per client_id: ${client_id}. Secret non corretto.`);
+            return NextResponse.json({ error: 'unauthorized', message: 'Credenziali client non valide.' }, {
+                status: 401,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }
+
+        // 7. Generate the JWT
+        const accessToken = jwt.sign(
+            { client_id: client_id, scope: data.scope }, // Payload per il token
+            jwtSecret, // Chiave segreta per firmare il token
+            { expiresIn: '1h' } // Token valido per 1 ora
+        );
+
+        console.log(`Token emesso con successo per client_id: ${client_id}`);
+        return NextResponse.json({ access_token: accessToken, token_type: 'Bearer', expires_in: 3600 }, {
+            status: 200,
             headers: { 'Content-Type': 'application/json' },
         });
 
     } catch (error: any) {
-        console.error('Errore interno del server durante la creazione del client API:', error);
+        console.error(`Errore interno del server durante la generazione del token: ${error.message}`);
         return NextResponse.json({ error: 'server_error', message: 'Si è verificato un errore interno del server.' }, {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
