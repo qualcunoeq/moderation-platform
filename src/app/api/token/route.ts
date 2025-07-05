@@ -1,156 +1,128 @@
-// Inizio del file src/app/api/token/route.ts
+// src/app/api/clients/route.ts
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import jwt from 'jsonwebtoken';
-import bcrypt from 'bcryptjs'; // Assicurati di aver installato 'bcryptjs' (npm install bcryptjs)
+import bcrypt from 'bcryptjs';
+import crypto from 'crypto'; // Modulo Node.js per la generazione di stringhe casuali
 
-// --- TEMPORARY DEBUGGING BLOCK (REMOVE BEFORE PRODUCTION) ---
-// Questo blocco ti aiuterà a capire come il tuo server hash il secret.
-// Inserisci QUI il client_secret IN CHIARO che stai usando per il test.
-const DEBUG_CLIENT_SECRET_IN_CHIARO = "MioNuovoSecretSicuro123!"; // <--- IL TUO SECRET ATTUALE IN CHIARO
-const DEBUG_SALT_ROUNDS = 10; // Deve corrispondere a quello che usi per salvare nel DB
-
-async function debugHashGeneration() {
-    if (DEBUG_CLIENT_SECRET_IN_CHIARO) {
-        try {
-            const debugHash = await bcrypt.hash(DEBUG_CLIENT_SECRET_IN_CHIARO, DEBUG_SALT_ROUNDS);
-            console.log('--- DEBUG: Server-side Generated Hash ---');
-            console.log('Secret in chiaro:', DEBUG_CLIENT_SECRET_IN_CHIARO);
-            console.log('Generated Hash:', debugHash);
-            console.log('-----------------------------------------');
-        } catch (hashError) {
-            console.error('--- DEBUG: Hash Generation Error ---', hashError);
-        }
-    }
-}
-// --- END TEMPORARY DEBUGGING BLOCK ---
-
-// --- Define an interface for the expected data structure from the api_clients table ---
-// This helps TypeScript understand the shape of the data returned by Supabase
-interface ApiClientData {
-    client_secret_hash: string;
-    scope: string;
-    // Add other fields if you select them, e.g., id?: string; client_id?: string;
-}
-
-// --- Environment Variable Configuration ---
+// --- Configurazione Variabili d'Ambiente ---
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const jwtSecret = process.env.JWT_SECRET;
+const masterApiKey = process.env.MASTER_API_KEY; // NUOVA VARIABILE D'AMBIENTE PER PROTEGGERE QUESTO ENDPOINT
 
-// Initialize Supabase client (using the service_role key for server-side operations)
+// Inizializza il client Supabase (usando la chiave service_role per operazioni lato server)
 let supabase: ReturnType<typeof createClient> | undefined;
 if (supabaseUrl && supabaseServiceRoleKey) {
     supabase = createClient(supabaseUrl, supabaseServiceRoleKey);
 } else {
-    console.error('Supabase environment variables (NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) are not fully configured for the Token API. Cannot connect to DB.');
-    // In a production app, you might want to throw an error or exit here if DB is essential.
+    console.error('Variabili d\'ambiente Supabase non completamente configurate per la gestione client API.');
 }
 
-// Check if JWT_SECRET is configured at startup
-if (!jwtSecret) {
-    console.error('JWT_SECRET environment variable is missing. JWT generation will fail.');
-    // This is a critical error: without a secret, tokens cannot be signed securely.
+// Verifica se la chiave API master è configurata all\'avvio
+if (!masterApiKey) {
+    console.error('La variabile d\'ambiente MASTER_API_KEY è mancante. L\'endpoint di gestione client non sarà protetto.');
 }
 
-// --- Main POST Request Handler for /api/token ---
+// --- Funzione Helper per Generare un Secret Casuale ---
+function generateRandomSecret(length: number = 32): string {
+    return crypto.randomBytes(Math.ceil(length / 2)).toString('hex').slice(0, length);
+}
+
+// --- Handler per le richieste POST (Creazione di un nuovo client API) ---
 export async function POST(request: NextRequest) {
-    console.log('--- API Token Request Received ---');
-    console.log('Request Method:', request.method);
-    console.log('Content-Type Header:', request.headers.get('Content-Type'));
+    console.log('--- Richiesta di Creazione Client API Ricevuta ---');
 
-    // CHIAMA QUI LA FUNZIONE DI DEBUG
-    await debugHashGeneration(); // <--- AGGIUNGI QUESTA RIGA
-
-    // 1. Validate JWT_SECRET configuration
-    if (!jwtSecret) {
-        console.error('Server Error: JWT_SECRET not configured. Cannot generate token. Status: 500');
-        return NextResponse.json({ error: 'server_error', message: 'Server configuration error.' }, {
-            status: 500,
+    // 1. Autenticazione con Chiave API Master
+    const authHeader = request.headers.get('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ') || authHeader.split(' ')[1] !== masterApiKey) {
+        console.warn('Tentativo di accesso non autorizzato all\'endpoint di gestione client.');
+        return NextResponse.json({ error: 'unauthorized', message: 'Accesso non autorizzato. Chiave API Master mancante o non valida.' }, {
+            status: 401,
             headers: { 'Content-Type': 'application/json' },
         });
     }
 
-    // 2. Parse the request body for credentials
+    // 2. Parsifica il corpo della richiesta
     let requestBody;
     try {
         requestBody = await request.json();
     } catch (jsonError: any) {
-        console.error(`Error parsing request body for /api/token: ${jsonError.message}. Status: 400`);
-        return NextResponse.json({ error: 'invalid_json', message: 'Request body must be valid JSON.' }, {
+        console.error(`Errore durante il parsing del corpo della richiesta: ${jsonError.message}`);
+        return NextResponse.json({ error: 'invalid_json', message: 'Il corpo della richiesta deve essere JSON valido.' }, {
             status: 400,
             headers: { 'Content-Type': 'application/json' },
         });
     }
 
-    const { client_id, client_secret, grant_type } = requestBody;
+    const { client_id, scope = 'default' } = requestBody; // 'scope' è opzionale, default 'default'
 
-    // 3. Input Validation
-    // Ensure client_id, client_secret are strings and grant_type is 'client_credentials'
-    if (!client_id || typeof client_id !== 'string' ||
-        !client_secret || typeof client_secret !== 'string' ||
-        grant_type !== 'client_credentials') { // The 'grant_type' is a standard OAuth2 parameter
-        console.error(`Invalid input for /api/token. Received: client_id=${client_id}, grant_type=${grant_type}. Status: 400`);
-        return NextResponse.json({ error: 'invalid_request', message: 'Missing or invalid client_id, client_secret, or grant_type.' }, {
+    // 3. Validazione dell'input
+    if (!client_id || typeof client_id !== 'string') {
+        console.warn('Input non valido: client_id mancante o non è una stringa.');
+        return NextResponse.json({ error: 'invalid_request', message: 'Il campo client_id è richiesto e deve essere una stringa.' }, {
             status: 400,
             headers: { 'Content-Type': 'application/json' },
         });
     }
 
-    // 4. Connect to Supabase
+    // 4. Verifica connessione Supabase
     if (!supabase) {
-        console.error('Server Error: Supabase client not initialized. Status: 500');
-        return NextResponse.json({ error: 'server_error', message: 'Database connection not available.' }, {
+        console.error('Errore del server: Client Supabase non inizializzato.');
+        return NextResponse.json({ error: 'server_error', message: 'Connessione al database non disponibile.' }, {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
         });
     }
 
-    // 5. Retrieve client_secret_hash from the database
     try {
-        // Explicitly type the data returned from Supabase
+        // 5. Genera un nuovo client_secret e il suo hash
+        const newClientSecret = generateRandomSecret(48); // Genera un secret di 48 caratteri
+        const saltRounds = 10; // Cost factor per bcrypt, deve corrispondere a quello usato per la verifica
+        const clientSecretHash = await bcrypt.hash(newClientSecret, saltRounds);
+
+        // 6. Inserisci il nuovo client nel database
         const { data, error: dbError } = await supabase
-            .from('api_clients') // Your Supabase table name for API clients
-            .select('client_secret_hash, scope')
-            .eq('client_id', client_id)
-            .single<ApiClientData>(); // <-- Use .single<ApiClientData>() here for type safety
+            .from('api_clients')
+            .insert({
+                client_id: client_id,
+                client_secret_hash: clientSecretHash,
+                scope: scope,
+            })
+            .select(); // Usa .select() per ottenere i dati inseriti, se necessario
 
-        if (dbError || !data) {
-            console.warn(`Authentication failed for client_id: ${client_id}. No client found or DB error: ${dbError?.message}`);
-            return NextResponse.json({ error: 'unauthorized', message: 'Invalid client credentials.' }, {
-                status: 401,
+        if (dbError) {
+            console.error(`Errore database durante l'inserimento del client ${client_id}:`, dbError);
+            if (dbError.code === '23505') { // Codice per violazione di chiave unica (client_id già esistente)
+                return NextResponse.json({ error: 'duplicate_client', message: 'Il client_id specificato esiste già.' }, {
+                    status: 409, // Conflict
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            }
+            return NextResponse.json({ error: 'database_error', message: 'Errore durante la registrazione del client API.' }, {
+                status: 500,
                 headers: { 'Content-Type': 'application/json' },
             });
         }
 
-        // Now TypeScript knows 'data' is of type ApiClientData, so 'data.client_secret_hash' is a string
-        const isPasswordValid = await bcrypt.compare(client_secret, data.client_secret_hash);
+        console.log(`Client API '${client_id}' registrato con successo.`);
 
-        if (!isPasswordValid) {
-            console.warn(`Authentication failed for client_id: ${client_id}. Incorrect secret.`);
-            return NextResponse.json({ error: 'unauthorized', message: 'Invalid client credentials.' }, {
-                status: 401,
-                headers: { 'Content-Type': 'application/json' },
-            });
-        }
-
-        // 7. Generate the JWT
-        const accessToken = jwt.sign(
-            { client_id: client_id, scope: data.scope }, // Payload for the token
-            jwtSecret, // Secret key for signing the token
-            { expiresIn: '1h' } // Token valid for 1 hour
-        );
-
-        console.log(`Token successfully issued for client_id: ${client_id}`);
-        return NextResponse.json({ access_token: accessToken, token_type: 'Bearer', expires_in: 3600 }, {
-            status: 200,
+        // 7. Restituisci il client_id e il client_secret (in chiaro) al chiamante
+        // IMPORTANTE: Questo è l'UNICO momento in cui il client_secret in chiaro dovrebbe essere esposto.
+        // Assicurati che questo endpoint sia ben protetto!
+        return NextResponse.json({
+            success: true,
+            message: 'Client API creato con successo.',
+            client_id: client_id,
+            client_secret: newClientSecret, // Restituisce il secret in chiaro
+            scope: scope,
+        }, {
+            status: 201, // Created
             headers: { 'Content-Type': 'application/json' },
         });
 
     } catch (error: any) {
-        console.error(`Internal server error during token generation: ${error.message}`);
-        return NextResponse.json({ error: 'server_error', message: 'An internal server error occurred.' }, {
+        console.error('Errore interno del server durante la creazione del client API:', error);
+        return NextResponse.json({ error: 'server_error', message: 'Si è verificato un errore interno del server.' }, {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
         });
