@@ -39,6 +39,27 @@ export async function POST(request: NextRequest) {
     console.log('Metodo Richiesta:', request.method);
     console.log('Header Content-Type:', request.headers.get('Content-Type'));
 
+    // --- BLOCCO DI DEBUG TEMPORANEO PER TESTARE BCRYPT.COMPARE() ---
+    // Rimuovi questo blocco prima del deploy in produzione!
+    const TEST_SECRET_IN_CHIARO = "passwordDiProva123"; // Un secret di test che conosci
+    // Genera l'hash di TEST_SECRET_IN_CHIARO usando il tuo generate_secret.js
+    // Esempio: node generate_secret.js (e usa "passwordDiProva123" come input)
+    const TEST_HASH_DAL_DB = "$2a$10$K/ljo8vApxQrp88kVSuyWe2wPyK5dYCxJJ.pf5.8ZkhbVjwvxwCbC"; // <--- INSERISCI QUI L'HASH GENERATO!
+
+    try {
+        console.log('--- DEBUG BCRYPT.COMPARE() TEST ---');
+        const isTestSecretValid = await bcrypt.compare(TEST_SECRET_IN_CHIARO, TEST_HASH_DAL_DB);
+        console.log(`Test bcrypt.compare('${TEST_SECRET_IN_CHIARO}', '${TEST_HASH_DAL_DB}') result: ${isTestSecretValid}`);
+        if (!isTestSecretValid) {
+            console.error('!!! ERRORE CRITICO DI DEBUG: bcrypt.compare() FALLITO PER UN SECRET NOTO E CORRETTO !!!');
+        } else {
+            console.log('--- DEBUG BCRYPT.COMPARE() TEST SUPERATO CON SUCCESSO ---');
+        }
+    } catch (bcryptError: any) {
+        console.error('--- ECCEZIONE DEBUG BCRYPT.COMPARE() ---', bcryptError.message);
+    }
+    // --- FINE BLOCCO DI DEBUG TEMPORANEO ---
+
     // 1. Validate JWT_SECRET configuration
     if (!jwtSecret) {
         console.error('Errore Server: JWT_SECRET non configurato. Impossibile generare il token. Stato: 500');
