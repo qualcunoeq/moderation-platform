@@ -1,5 +1,3 @@
-// src/app/api/clients/[id]/route.ts
-
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import bcrypt from 'bcryptjs';
@@ -22,17 +20,83 @@ if (!masterApiKey) {
     console.error('La variabile d\'ambiente MASTER_API_KEY è mancante. L\'endpoint di gestione client non sarà protetto.');
 }
 
-// --- Handler per le richieste PUT (Aggiornamento di un client API esistente) ---
-export async function PUT(request: NextRequest, { params }: { params: { id: string } }) { // Aggiornato: client_id a id
-    // --- LOG DI DEBUG ULTRA-PRECOCE ---
-    // Questo log dovrebbe apparire nei log di Vercel se la funzione PUT viene invocata.
-    console.log(`[DEBUG] PUT handler invoked for client ID (renamed): ${params.id}`); // Aggiornato: client_id a id
-    console.log(`[DEBUG] Request Method: ${request.method}`);
-    console.log(`[DEBUG] Request URL: ${request.url}`);
-    console.log(`[DEBUG] Authorization Header: ${request.headers.get('Authorization') ? 'Present' : 'Missing'}`);
-    // --- FINE LOG DI DEBUG ---
+// --- Handler per le richieste GET (Recupero di un singolo client API) ---
+// La funzione riceve 'params' che contiene i segmenti dinamici dell'URL (es. client_id).
+export async function GET(request: NextRequest, { params }: { params: { client_id: string } }) {
+    console.log(`--- Richiesta di Recupero Singolo Client API Ricevuta per ID: ${params.client_id} ---`);
 
-    console.log(`--- Richiesta di Aggiornamento Client API Ricevuta per ID: ${params.id} ---`); // Aggiornato: client_id a id
+    // 1. Autenticazione con Chiave API Master
+    const authHeader = request.headers.get('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ') || authHeader.split(' ')[1] !== masterApiKey) {
+        console.warn('Tentativo di accesso non autorizzato all\'endpoint di recupero singolo client.');
+        return NextResponse.json({ error: 'unauthorized', message: 'Accesso non autorizzato. Chiave API Master mancante o non valida.' }, {
+            status: 401,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+
+    // 2. Estrai il client_id dai parametri dell'URL
+    const clientIdToRetrieve = params.client_id;
+    if (!clientIdToRetrieve) {
+        console.warn('client_id mancante nei parametri dell\'URL per il recupero singolo.');
+        return NextResponse.json({ error: 'invalid_request', message: 'Il client_id è richiesto nell\'URL.' }, {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+
+    // 3. Verifica connessione Supabase
+    if (!supabase) {
+        console.error('Errore del server: Client Supabase non inizializzato.');
+        return NextResponse.json({ error: 'server_error', message: 'Connessione al database non disponibile.' }, {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+
+    try {
+        // 4. Recupera il client specifico dal database
+        // SELEZIONA SOLO I CAMPI NECESSARI ED ESCLUDI IL client_secret_hash PER SICUREZZA!
+        const { data, error: dbError } = await supabase
+            .from('api_clients')
+            .select('client_id, scope, created_at') // Assicurati che 'created_at' esista o rimuovilo se non lo usi.
+            .eq('client_id', clientIdToRetrieve)
+            .single(); // Usa .single() per aspettarti un solo record
+
+        if (dbError || !data) {
+            console.warn(`Client non trovato per il recupero: ${clientIdToRetrieve}. Errore DB: ${dbError?.message}`);
+            return NextResponse.json({ error: 'not_found', message: 'Client API non trovato.' }, {
+                status: 404, // Not Found
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }
+
+        console.log(`Client API '${clientIdToRetrieve}' recuperato con successo.`);
+
+        // 5. Restituisci i dettagli del client
+        return NextResponse.json({
+            success: true,
+            message: 'Client API recuperato con successo.',
+            client: data, // Restituisce l'oggetto client recuperato
+        }, {
+            status: 200, // OK
+            headers: { 'Content-Type': 'application/json' },
+        });
+
+    } catch (error: any) {
+        console.error('Errore interno del server durante il recupero del singolo client API:', error);
+        return NextResponse.json({ error: 'server_error', message: 'Si è verificato un errore interno del server.' }, {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+}
+
+
+// --- Handler per le richieste PUT (Aggiornamento di un client API esistente) ---
+// Questo è il codice PUT esistente che hai già.
+export async function PUT(request: NextRequest, { params }: { params: { client_id: string } }) {
+    console.log(`--- Richiesta di Aggiornamento Client API Ricevuta per ID: ${params.client_id} ---`);
 
     // 1. Autenticazione con Chiave API Master
     const authHeader = request.headers.get('Authorization');
@@ -44,11 +108,11 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
         });
     }
 
-    // 2. Estrai l'ID dai parametri dell'URL
-    const clientIdToUpdate = params.id; // Aggiornato: client_id a id
+    // 2. Estrai il client_id dai parametri dell'URL
+    const clientIdToUpdate = params.client_id;
     if (!clientIdToUpdate) {
-        console.warn('ID mancante nei parametri dell\'URL per l\'aggiornamento.'); // Aggiornato: client_id a ID
-        return NextResponse.json({ error: 'invalid_request', message: 'L\'ID è richiesto nell\'URL.' }, { // Aggiornato: client_id a ID
+        console.warn('client_id mancante nei parametri dell\'URL per l\'aggiornamento.');
+        return NextResponse.json({ error: 'invalid_request', message: 'Il client_id è richiesto nell\'URL.' }, {
             status: 400,
             headers: { 'Content-Type': 'application/json' },
         });
@@ -91,7 +155,7 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
         const { data, error: dbError } = await supabase
             .from('api_clients')
             .update({ scope: scope })
-            .eq('client_id', clientIdToUpdate) // Il campo nel DB rimane 'client_id'
+            .eq('client_id', clientIdToUpdate)
             .select();
 
         if (dbError) {
@@ -116,7 +180,7 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
         return NextResponse.json({
             success: true,
             message: 'Client API aggiornato con successo.',
-            client_id: data[0].client_id, // Restituisce ancora client_id come nome del campo
+            client_id: data[0].client_id,
             scope: data[0].scope,
         }, {
             status: 200,
