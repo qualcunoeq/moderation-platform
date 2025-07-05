@@ -30,6 +30,13 @@ function generateRandomSecret(length: number = 48): string {
 
 // --- Handler per le richieste GET (Recupero di tutti i client API) ---
 export async function GET(request: NextRequest) {
+    // --- LOG DI DEBUG ULTRA-PRECOCE ---
+    console.log(`[DEBUG] GET handler invoked for /api/clients`);
+    console.log(`[DEBUG] Request Method: ${request.method}`);
+    console.log(`[DEBUG] Request URL: ${request.url}`);
+    console.log(`[DEBUG] Authorization Header: ${request.headers.get('Authorization') ? 'Present' : 'Missing'}`);
+    // --- FINE LOG DI DEBUG ---
+
     console.log('--- Richiesta di Recupero Tutti i Client API Ricevuta ---');
 
     // 1. Autenticazione con Chiave API Master
