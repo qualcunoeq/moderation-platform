@@ -1,5 +1,5 @@
 // src/app/api/clients/[client_id]/route.ts
-
+// Forza nuovo deploy per PUT
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import bcrypt from 'bcryptjs'; // Necessario se si volesse aggiornare il secret, ma per ora aggiorniamo solo lo scope.
