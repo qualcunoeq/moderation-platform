@@ -88,7 +88,6 @@ export async function GET(request: NextRequest) {
 }
 
 // --- Handler per le richieste POST (Creazione di un nuovo client API) ---
-// Questo è il codice POST esistente che hai già.
 export async function POST(request: NextRequest) {
     console.log('--- Richiesta di Creazione Client API Ricevuta ---');
 
@@ -138,7 +137,7 @@ export async function POST(request: NextRequest) {
         // 5. Genera un nuovo client_secret e il suo hash
         const newClientSecret = generateRandomSecret(48);
         const saltRounds = 10;
-        const clientSecretHash = await bcrypt.hash(newClientSecret, saltRands);
+        const clientSecretHash = await bcrypt.hash(newClientSecret, saltRounds); // Riga corretta: da saltRands a saltRounds
 
         // 6. Inserisci il nuovo client nel database
         const { data, error: dbError } = await supabase
