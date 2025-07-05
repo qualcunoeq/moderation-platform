@@ -1,9 +1,30 @@
-// src/app/api/token/route.ts
+// Inizio del file src/app/api/token/route.ts
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs'; // Assicurati di aver installato 'bcryptjs' (npm install bcryptjs)
+
+// --- TEMPORARY DEBUGGING BLOCK (REMOVE BEFORE PRODUCTION) ---
+// Questo blocco ti aiuterà a capire come il tuo server hash il secret.
+// Inserisci QUI il client_secret IN CHIARO che stai usando per il test.
+const DEBUG_CLIENT_SECRET_IN_CHIARO = "MioNuovoSecretSicuro123!"; // <--- IL TUO SECRET ATTUALE IN CHIARO
+const DEBUG_SALT_ROUNDS = 10; // Deve corrispondere a quello che usi per salvare nel DB
+
+async function debugHashGeneration() {
+    if (DEBUG_CLIENT_SECRET_IN_CHIARO) {
+        try {
+            const debugHash = await bcrypt.hash(DEBUG_CLIENT_SECRET_IN_CHIARO, DEBUG_SALT_ROUNDS);
+            console.log('--- DEBUG: Server-side Generated Hash ---');
+            console.log('Secret in chiaro:', DEBUG_CLIENT_SECRET_IN_CHIARO);
+            console.log('Generated Hash:', debugHash);
+            console.log('-----------------------------------------');
+        } catch (hashError) {
+            console.error('--- DEBUG: Hash Generation Error ---', hashError);
+        }
+    }
+}
+// --- END TEMPORARY DEBUGGING BLOCK ---
 
 // --- Define an interface for the expected data structure from the api_clients table ---
 // This helps TypeScript understand the shape of the data returned by Supabase
@@ -38,6 +59,9 @@ export async function POST(request: NextRequest) {
     console.log('--- API Token Request Received ---');
     console.log('Request Method:', request.method);
     console.log('Content-Type Header:', request.headers.get('Content-Type'));
+
+    // CHIAMA QUI LA FUNZIONE DI DEBUG
+    await debugHashGeneration(); // <--- AGGIUNGI QUESTA RIGA
 
     // 1. Validate JWT_SECRET configuration
     if (!jwtSecret) {
