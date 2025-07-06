@@ -1,8 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
     // Impostazioni di configurazione di Next.js
-    // Aggiungi qui qualsiasi configurazione specifica tu abbia,
-    // al momento non ne abbiamo aggiunte, quindi questo è sufficiente.
+    // Aggiungi qui qualsiasi configurazione specifica tu abbia
+    // al momento non ne abbiamo aggiunte, quindi questo ï¿½ sufficiente.
 };
 
 module.exports = nextConfig;
