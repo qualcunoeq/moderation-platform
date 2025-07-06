@@ -3,13 +3,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
-import { OpenAI } from 'openai'; // Assicurati di aver installato 'openai' (npm install openai)
+import { OpenAI } from 'openai';
 
 // --- Environment Variable Configuration ---
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const jwtSecret = process.env.JWT_SECRET;
-const openaiApiKey = process.env.OPENAI_API_KEY; // La tua chiave API di OpenAI
+const openaiApiKey = process.env.OPENAI_API_KEY;
 
 // Initialize Supabase client
 let supabase: ReturnType<typeof createClient> | undefined;
@@ -38,18 +38,22 @@ if (!jwtSecret) {
 function determineActionAndSeverity(moderationResult: any): { action: string; severity: string } {
     if (moderationResult.flagged) {
         // Se è flagged, controlla i punteggi per determinare la severità
-        const scores = moderationResult.scores;
+        // CORREZIONE: Usa moderationResult.category_scores invece di moderationResult.scores
+        const scores = moderationResult.category_scores; // <--- CORREZIONE QUI
         let severity = 'low'; // Default
 
-        // Esempi di logica per la severità (puoi personalizzarla)
-        // Questi sono valori arbitrari, adattali alle tue esigenze
         const highSeverityThreshold = 0.8;
         const mediumSeverityThreshold = 0.5;
 
-        if (scores.sexual > highSeverityThreshold || scores.hate > highSeverityThreshold || scores.violence > highSeverityThreshold || scores['self-harm'] > highSeverityThreshold) {
-            severity = 'high';
-        } else if (scores.sexual > mediumSeverityThreshold || scores.hate > mediumSeverityThreshold || scores.violence > mediumSeverityThreshold || scores['self-harm'] > mediumSeverityThreshold) {
-            severity = 'medium';
+        // Controlla che 'scores' sia definito prima di accedere alle proprietà
+        if (scores) {
+            if (scores.sexual > highSeverityThreshold || scores.hate > highSeverityThreshold || scores.violence > highSeverityThreshold || scores['self-harm'] > highSeverityThreshold) {
+                severity = 'high';
+            } else if (scores.sexual > mediumSeverityThreshold || scores.hate > mediumSeverityThreshold || scores.violence > mediumSeverityThreshold || scores['self-harm'] > mediumSeverityThreshold) {
+                severity = 'medium';
+            }
+        } else {
+            console.warn("Moderation scores (category_scores) not found in OpenAI response for severity determination.");
         }
 
         return { action: 'flagged', severity: severity };
@@ -134,6 +138,7 @@ export async function POST(request: NextRequest) {
     let moderationAction = 'unknown';
     let moderationSeverity = 'unknown';
     let moderationCategories: string[] = [];
+    // CORREZIONE: Inizializza moderationScores come un oggetto vuoto per evitare undefined
     let moderationScores: { [key: string]: number } = {};
 
     try {
@@ -157,8 +162,8 @@ export async function POST(request: NextRequest) {
             }
         }
 
-        // Estrai i punteggi
-        moderationScores = moderationResult.scores;
+        // CORREZIONE: Estrai i punteggi da category_scores
+        moderationScores = moderationResult.category_scores; // <--- CORREZIONE QUI
 
     } catch (openaiError: any) {
         console.error(`Errore durante la chiamata all'API di moderazione OpenAI: ${openaiError.message}. Stato: 500`);
@@ -175,7 +180,7 @@ export async function POST(request: NextRequest) {
                 .from('moderation_logs')
                 .insert({
                     client_id: clientId, // L'ID del client autenticato
-                    user_id: userId || null, // L'ID dell'utente finale, se fornito
+                    user_id: userId || null, // L'ID dell'utente finale, se fornito (CORREZIONE: assicurati che sia null se undefined)
                     content: content,
                     flagged: moderationResult.flagged,
                     action: moderationAction,
