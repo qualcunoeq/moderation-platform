@@ -1,8 +1,8 @@
-// src/app/api/clients/[id]/route.ts
+// src/app/api/clients/details/[id]/route.ts
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import bcrypt from 'bcryptjs';
+import bcrypt from 'bcryptjs'; // Mantenuto per completezza, anche se non usato direttamente in DELETE
 
 // --- Configurazione Variabili d'Ambiente ---
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -23,9 +23,9 @@ if (!masterApiKey) {
 }
 
 // --- Handler per le richieste GET (Recupero di un singolo client API) ---
-// La funzione riceve 'params' che contiene i segmenti dinamici dell'URL, ora come 'id'.
 export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
-    console.log(`--- Richiesta di Recupero Singolo Client API Ricevuta per ID: ${params.id} ---`); // Aggiornato
+    console.log(`[DEBUG] GET handler invoked for /api/clients/details/[id] with ID: ${params.id}`);
+    console.log(`--- Richiesta di Recupero Singolo Client API Ricevuta per ID: ${params.id} ---`);
 
     // 1. Autenticazione con Chiave API Master
     const authHeader = request.headers.get('Authorization');
@@ -38,7 +38,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     }
 
     // 2. Estrai l'ID del client dai parametri dell'URL
-    const clientIdToRetrieve = params.id; // Aggiornato
+    const clientIdToRetrieve = params.id;
     if (!clientIdToRetrieve) {
         console.warn('ID del client mancante nei parametri dell\'URL per il recupero singolo.');
         return NextResponse.json({ error: 'invalid_request', message: 'L\'ID del client è richiesto nell\'URL.' }, {
@@ -95,9 +95,8 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
 
 
 // --- Handler per le richieste PUT (Aggiornamento di un client API esistente) ---
-// Anche qui, aggiorniamo per usare 'id' invece di 'client_id' nei parametri.
-export async function PUT(request: NextRequest, { params }: { params: { id: string } }) { // Aggiornato
-    console.log(`--- Richiesta di Aggiornamento Client API Ricevuta per ID: ${params.id} ---`); // Aggiornato
+export async function PUT(request: NextRequest, { params }: { params: { id: string } }) {
+    console.log(`--- Richiesta di Aggiornamento Client API Ricevuta per ID: ${params.id} ---`);
 
     // 1. Autenticazione con Chiave API Master
     const authHeader = request.headers.get('Authorization');
@@ -110,7 +109,7 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
     }
 
     // 2. Estrai l'ID del client dai parametri dell'URL
-    const clientIdToUpdate = params.id; // Aggiornato
+    const clientIdToUpdate = params.id;
     if (!clientIdToUpdate) {
         console.warn('ID del client mancante nei parametri dell\'URL per l\'aggiornamento.');
         return NextResponse.json({ error: 'invalid_request', message: 'L\'ID del client è richiesto nell\'URL.' }, {
@@ -190,6 +189,87 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
 
     } catch (error: any) {
         console.error('Errore interno del server durante l\'aggiornamento del client API:', error);
+        return NextResponse.json({ error: 'server_error', message: 'Si è verificato un errore interno del server.' }, {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+}
+
+// --- Handler per le richieste DELETE (Cancellazione di un client API esistente) ---
+export async function DELETE(request: NextRequest, { params }: { params: { id: string } }) {
+    console.log(`--- Richiesta di Cancellazione Client API Ricevuta per ID: ${params.id} ---`);
+
+    // 1. Autenticazione con Chiave API Master
+    const authHeader = request.headers.get('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ') || authHeader.split(' ')[1] !== masterApiKey) {
+        console.warn('Tentativo di accesso non autorizzato all\'endpoint di cancellazione client.');
+        return NextResponse.json({ error: 'unauthorized', message: 'Accesso non autorizzato. Chiave API Master mancante o non valida.' }, {
+            status: 401,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+
+    // 2. Estrai l'ID del client dai parametri dell'URL
+    const clientIdToDelete = params.id;
+    if (!clientIdToDelete) {
+        console.warn('ID del client mancante nei parametri dell\'URL per la cancellazione.');
+        return NextResponse.json({ error: 'invalid_request', message: 'L\'ID del client è richiesto nell\'URL.' }, {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+
+    // 3. Verifica connessione Supabase
+    if (!supabase) {
+        console.error('Errore del server: Client Supabase non inizializzato.');
+        return NextResponse.json({ error: 'server_error', message: 'Connessione al database non disponibile.' }, {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+
+    try {
+        // 4. Cancella il client dal database
+        const { error: dbError, count } = await supabase
+            .from('api_clients')
+            .delete()
+            .eq('client_id', clientIdToDelete)
+            .select(); // Usa .select() per ottenere il numero di righe eliminate (se supportato e necessario)
+
+        if (dbError) {
+            console.error(`Errore database durante la cancellazione del client ${clientIdToDelete}:`, dbError);
+            return NextResponse.json({ error: 'database_error', message: 'Errore durante la cancellazione del client API.' }, {
+                status: 500,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }
+
+        // Supabase .delete() con .select() restituisce un array di dati eliminati.
+        // Se l'array è vuoto, significa che nessun record è stato trovato o eliminato.
+        if (!count || count === 0) { // 'count' è il numero di righe eliminate. Se 0, non trovato.
+             console.warn(`Client non trovato per la cancellazione: ${clientIdToDelete}.`);
+             return NextResponse.json({ error: 'not_found', message: 'Client API non trovato.' }, {
+                 status: 404, // Not Found
+                 headers: { 'Content-Type': 'application/json' },
+             });
+         }
+
+
+        console.log(`Client API '${clientIdToDelete}' cancellato con successo.`);
+
+        // 5. Restituisci la risposta di successo
+        return NextResponse.json({
+            success: true,
+            message: 'Client API cancellato con successo.',
+            client_id: clientIdToDelete, // Conferma l'ID del client cancellato
+        }, {
+            status: 200, // OK
+            headers: { 'Content-Type': 'application/json' },
+        });
+
+    } catch (error: any) {
+        console.error('Errore interno del server durante la cancellazione del client API:', error);
         return NextResponse.json({ error: 'server_error', message: 'Si è verificato un errore interno del server.' }, {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
