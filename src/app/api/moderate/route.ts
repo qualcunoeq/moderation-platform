@@ -35,31 +35,42 @@ if (!jwtSecret) {
 // --- Helper Function to Determine Action and Severity ---
 // Questa funzione analizza la risposta di moderazione di OpenAI per determinare
 // l'azione raccomandata e la severità.
-function determineActionAndSeverity(moderationResult: any): { action: string; severity: string } {
-    if (moderationResult.flagged) {
-        // Se è flagged, controlla i punteggi per determinare la severità
-        // CORREZIONE: Usa moderationResult.category_scores invece di moderationResult.scores
-        const scores = moderationResult.category_scores; // <--- CORREZIONE QUI
-        let severity = 'low'; // Default
+function determineActionAndSeverity(moderationResult: any): { action: boolean; severity: string; determinedAction: string } {
+    // 'action' qui riflette lo stato 'flagged' di OpenAI (true/false)
+    const flagged = moderationResult.flagged;
+    const scores = moderationResult.category_scores; // I punteggi sono in category_scores
 
-        const highSeverityThreshold = 0.8;
-        const mediumSeverityThreshold = 0.5;
+    let severity = 'low';
+    let determinedAction = 'approved'; // Azione predefinita se non flagged
 
-        // Controlla che 'scores' sia definito prima di accedere alle proprietà
+    const highSeverityThreshold = 0.8;
+    const mediumSeverityThreshold = 0.5;
+
+    if (flagged) {
         if (scores) {
+            // Logica per determinare la severità e l'azione più specifica
             if (scores.sexual > highSeverityThreshold || scores.hate > highSeverityThreshold || scores.violence > highSeverityThreshold || scores['self-harm'] > highSeverityThreshold) {
                 severity = 'high';
-            } else if (scores.sexual > mediumSeverityThreshold || scores.hate > mediumSeverityThreshold || scores.violence > mediumSeverityThreshold || scores['self-harm'] > mediumSeverityThreshold) {
+                determinedAction = 'block'; // Azione: Blocca immediatamente il contenuto
+            } else if (scores.sexual > mediumSeverityThreshold || scores.hate > mediumSeverityThreshold || scores.harassment > mediumSeverityThreshold || scores.violence > mediumSeverityThreshold || scores['self-harm'] > mediumSeverityThreshold) {
                 severity = 'medium';
+                determinedAction = 'manual_review'; // Azione: Richiede revisione umana
+            } else {
+                severity = 'low';
+                determinedAction = 'warn'; // Azione: Avvisa l'utente, ma il contenuto può essere visualizzato
             }
         } else {
-            console.warn("Moderation scores (category_scores) not found in OpenAI response for severity determination.");
+            console.warn("Punteggi di moderazione (category_scores) non trovati nella risposta OpenAI per la determinazione della severità. Defaulting a 'flagged_unknown_severity'.");
+            severity = 'unknown';
+            determinedAction = 'flagged_unknown_severity'; // Contenuto segnalato ma severità sconosciuta
         }
-
-        return { action: 'flagged', severity: severity };
     } else {
-        return { action: 'approved', severity: 'low' };
+        // Se non è flagged, è approvato
+        severity = 'low';
+        determinedAction = 'approved';
     }
+
+    return { action: flagged, severity: severity, determinedAction: determinedAction };
 }
 
 // --- Main POST Request Handler for /api/moderate ---
@@ -135,11 +146,10 @@ export async function POST(request: NextRequest) {
     }
 
     let moderationResult: any = null;
-    let moderationAction = 'unknown';
-    let moderationSeverity = 'unknown';
     let moderationCategories: string[] = [];
-    // CORREZIONE: Inizializza moderationScores come un oggetto vuoto per evitare undefined
     let moderationScores: { [key: string]: number } = {};
+    let determinedAction = 'unknown'; // Inizializza l'azione determinata
+    let moderationSeverity = 'unknown'; // Inizializza la severità
 
     try {
         // 5. Call OpenAI Moderation API
@@ -151,9 +161,9 @@ export async function POST(request: NextRequest) {
         console.log('Risultato moderazione OpenAI:', moderationResult);
 
         // Determina azione e severità in base al risultato di OpenAI
-        const { action, severity } = determineActionAndSeverity(moderationResult);
-        moderationAction = action;
+        const { action: flaggedFromOpenAI, severity, determinedAction: calculatedAction } = determineActionAndSeverity(moderationResult);
         moderationSeverity = severity;
+        determinedAction = calculatedAction; // Usa l'azione calcolata
 
         // Estrai le categorie segnalate
         for (const category in moderationResult.categories) {
@@ -162,8 +172,8 @@ export async function POST(request: NextRequest) {
             }
         }
 
-        // CORREZIONE: Estrai i punteggi da category_scores
-        moderationScores = moderationResult.category_scores; // <--- CORREZIONE QUI
+        // Estrai i punteggi da category_scores
+        moderationScores = moderationResult.category_scores;
 
     } catch (openaiError: any) {
         console.error(`Errore durante la chiamata all'API di moderazione OpenAI: ${openaiError.message}. Stato: 500`);
@@ -179,21 +189,19 @@ export async function POST(request: NextRequest) {
             const { error: logError } = await supabase
                 .from('moderation_logs')
                 .insert({
-                    client_id: clientId, // L'ID del client autenticato
-                    user_id: userId || null, // L'ID dell'utente finale, se fornito (CORREZIONE: assicurati che sia null se undefined)
+                    client_id: clientId,
+                    user_id: userId || null,
                     content: content,
-                    flagged: moderationResult.flagged,
-                    action: moderationAction,
+                    flagged: moderationResult.flagged, // Questo è il booleano di OpenAI
+                    action: determinedAction, // Questo è l'azione determinata dalla tua logica
                     severity: moderationSeverity,
                     categories: moderationCategories,
                     scores: moderationScores,
-                    openai_response_raw: moderationResult, // Salva la risposta raw di OpenAI
+                    openai_response_raw: moderationResult,
                 });
 
             if (logError) {
                 console.error('Errore durante il logging della moderazione su Supabase:', logError);
-                // Non blocchiamo la risposta di successo all'utente finale per un errore di logging,
-                // ma lo registriamo.
             } else {
                 console.log('Log di moderazione salvato con successo su Supabase.');
             }
@@ -209,11 +217,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
         success: true,
         flagged: moderationResult.flagged,
-        action: moderationAction,
+        action: determinedAction, // Restituisci l'azione determinata
         severity: moderationSeverity,
         categories: moderationCategories,
         scores: moderationScores,
-        message: moderationResult.flagged ? 'Content flagged' : 'Content approved',
+        message: moderationResult.flagged ? `Contenuto segnalato. Azione raccomandata: ${determinedAction}.` : 'Contenuto approvato.',
     }, {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
