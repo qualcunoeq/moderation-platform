@@ -19,18 +19,83 @@ if (!masterApiKey) {
     console.error('La variabile d\'ambiente MASTER_API_KEY è mancante. L\'endpoint delle regole non sarà protetto.');
 }
 
-// --- Handler per le richieste POST (Aggiunta di una nuova regola di moderazione) ---
-export async function POST(request: NextRequest) {
-    console.log('--- Richiesta Aggiunta Regola di Moderazione Ricevuta ---');
-
-    // 1. Autenticazione con Chiave API Master
+// --- Funzione di utility per l'autenticazione ---
+function authenticateMasterKey(request: NextRequest, expectedKey: string | undefined): NextResponse | null {
     const authHeader = request.headers.get('Authorization');
-    if (!authHeader || !authHeader.startsWith('Bearer ') || authHeader.split(' ')[1] !== masterApiKey) {
-        console.warn('Tentativo di accesso non autorizzato all\'endpoint di aggiunta regole.');
+    if (!authHeader || !authHeader.startsWith('Bearer ') || authHeader.split(' ')[1] !== expectedKey) {
+        console.warn('Tentativo di accesso non autorizzato.');
         return NextResponse.json({ error: 'unauthorized', message: 'Accesso non autorizzato. Chiave API Master mancante o non valida.' }, {
             status: 401,
             headers: { 'Content-Type': 'application/json' },
         });
+    }
+    return null; // Autenticazione riuscita
+}
+
+// --- Handler per le richieste GET (Recupero delle regole di moderazione) ---
+export async function GET(request: NextRequest) {
+    console.log('--- Richiesta Recupero Regole di Moderazione Ricevuta ---');
+
+    // 1. Autenticazione con Chiave API Master
+    const authErrorResponse = authenticateMasterKey(request, masterApiKey);
+    if (authErrorResponse) {
+        return authErrorResponse;
+    }
+
+    // 2. Verifica connessione Supabase
+    if (!supabase) {
+        console.error('Errore del server: Client Supabase non inizializzato.');
+        return NextResponse.json({ error: 'server_error', message: 'Connessione al database non disponibile.' }, {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+
+    try {
+        // 3. Recupera tutte le regole dal database
+        const { data, error: dbError } = await supabase
+            .from('custom_moderation_rules')
+            .select('*')
+            .order('created_at', { ascending: false }); // Ordina per data di creazione, le più recenti prima
+
+        if (dbError) {
+            console.error(`Errore database durante il recupero delle regole:`, dbError);
+            return NextResponse.json({ error: 'database_error', message: 'Errore durante il recupero delle regole di moderazione.' }, {
+                status: 500,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }
+
+        console.log(`Recuperate ${data?.length || 0} regole di moderazione.`);
+
+        // 4. Restituisci la risposta di successo
+        return NextResponse.json({
+            success: true,
+            message: 'Regole di moderazione recuperate con successo.',
+            rules: data || [],
+        }, {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        });
+
+    } catch (error: any) {
+        console.error('Errore interno del server durante il recupero delle regole di moderazione:', error);
+        return NextResponse.json({ error: 'server_error', message: 'Si è verificato un errore interno del server.' }, {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+}
+
+
+// --- Handler per le richieste POST (Aggiunta di una nuova regola di moderazione) ---
+export async function POST(request: NextRequest) {
+    console.log('--- Richiesta Aggiunta Regola di Moderazione Ricevuta (Nuovo Percorso) ---');
+
+    // 1. Autenticazione con Chiave API Master
+    const authErrorResponse = authenticateMasterKey(request, masterApiKey);
+    if (authErrorResponse) {
+        return authErrorResponse;
     }
 
     // 2. Parsifica il corpo della richiesta
@@ -97,11 +162,11 @@ export async function POST(request: NextRequest) {
                 is_regex: is_regex,
                 case_sensitive: case_sensitive,
             })
-            .select(); // Richiede i dati del record inserito
+            .select();
 
         if (dbError) {
             console.error(`Errore database durante l'inserimento della regola:`, dbError);
-            if (dbError.code === '23505') { // Codice per violazione di unique constraint (se ne aggiungiamo uno in futuro)
+            if (dbError.code === '23505') { // Codice per violazione di unique constraint
                 return NextResponse.json({ error: 'duplicate_rule', message: 'Una regola con questo termine esiste già.' }, {
                     status: 409,
                     headers: { 'Content-Type': 'application/json' },
@@ -121,7 +186,7 @@ export async function POST(request: NextRequest) {
             message: 'Regola di moderazione aggiunta con successo.',
             rule: data ? data[0] : null,
         }, {
-            status: 201, // Created
+            status: 201,
             headers: { 'Content-Type': 'application/json' },
         });
 
