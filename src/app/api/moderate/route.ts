@@ -1,4 +1,4 @@
-// src/app/api/moderate/route.ts
+// src/app/api/moderation/route.ts
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
@@ -33,39 +33,34 @@ if (!jwtSecret) {
 }
 
 // --- Helper Function to Determine Action and Severity ---
-// Questa funzione analizza la risposta di moderazione di OpenAI per determinare
-// l'azione raccomandata e la severità.
 function determineActionAndSeverity(moderationResult: any): { action: boolean; severity: string; determinedAction: string } {
-    // 'action' qui riflette lo stato 'flagged' di OpenAI (true/false)
     const flagged = moderationResult.flagged;
-    const scores = moderationResult.category_scores; // I punteggi sono in category_scores
+    const scores = moderationResult.category_scores;
 
     let severity = 'low';
-    let determinedAction = 'approved'; // Azione predefinita se non flagged
+    let determinedAction = 'approved';
 
     const highSeverityThreshold = 0.8;
     const mediumSeverityThreshold = 0.5;
 
     if (flagged) {
         if (scores) {
-            // Logica per determinare la severità e l'azione più specifica
             if (scores.sexual > highSeverityThreshold || scores.hate > highSeverityThreshold || scores.violence > highSeverityThreshold || scores['self-harm'] > highSeverityThreshold) {
                 severity = 'high';
-                determinedAction = 'block'; // Azione: Blocca immediatamente il contenuto
+                determinedAction = 'block';
             } else if (scores.sexual > mediumSeverityThreshold || scores.hate > mediumSeverityThreshold || scores.harassment > mediumSeverityThreshold || scores.violence > mediumSeverityThreshold || scores['self-harm'] > mediumSeverityThreshold) {
                 severity = 'medium';
-                determinedAction = 'manual_review'; // Azione: Richiede revisione umana
+                determinedAction = 'manual_review';
             } else {
                 severity = 'low';
-                determinedAction = 'warn'; // Azione: Avvisa l'utente, ma il contenuto può essere visualizzato
+                determinedAction = 'warn';
             }
         } else {
-            console.warn("Punteggi di moderazione (category_scores) non trovati nella risposta OpenAI per la determinazione della severità. Defaulting a 'flagged_unknown_severity'.");
+            console.warn("Moderation scores (category_scores) not found in OpenAI response for severity determination. Defaulting to 'flagged_unknown_severity'.");
             severity = 'unknown';
-            determinedAction = 'flagged_unknown_severity'; // Contenuto segnalato ma severità sconosciuta
+            determinedAction = 'flagged_unknown_severity';
         }
     } else {
-        // Se non è flagged, è approvato
         severity = 'low';
         determinedAction = 'approved';
     }
@@ -73,9 +68,95 @@ function determineActionAndSeverity(moderationResult: any): { action: boolean; s
     return { action: flagged, severity: severity, determinedAction: determinedAction };
 }
 
+// --- Helper Function to Apply Custom Rules ---
+interface CustomRule {
+    id: string; // Ensure this matches the UUID type in the DB
+    term: string;
+    type: 'blacklist' | 'whitelist';
+    action_override: 'block' | 'approve' | 'manual_review' | 'warn' | null;
+    is_regex: boolean;
+    case_sensitive: boolean;
+}
+
+async function applyCustomRules(content: string): Promise<{ actionOverride: string | null; ruleMatched: CustomRule | null }> {
+    if (!supabase) {
+        console.warn('Supabase client not available for custom rules.');
+        return { actionOverride: null, ruleMatched: null };
+    }
+
+    try {
+        // Retrieve all active custom rules
+        const { data, error: dbError } = await supabase
+            .from('custom_moderation_rules')
+            .select('*');
+
+        if (dbError) {
+            console.error('Error retrieving custom moderation rules:', dbError);
+            return { actionOverride: null, ruleMatched: null };
+        }
+
+        // TypeScript FIX: Explicitly assert the type of 'data' to CustomRule[]
+        // This tells TypeScript that we expect 'data' (or an empty array if null)
+        // to conform to the CustomRule interface.
+        const rules: CustomRule[] = (data || []) as CustomRule[]; // <--- KEY CORRECTION HERE
+
+        if (rules.length === 0) {
+            console.log('No custom moderation rules found.');
+            return { actionOverride: null, ruleMatched: null };
+        }
+
+        // Normalize content for case-insensitive comparison if needed
+        const normalizedContent = content.toLowerCase();
+
+        let whitelistMatch: CustomRule | null = null;
+        let blacklistMatch: CustomRule | null = null;
+
+        // Now 'rule' will be correctly typed as CustomRule within the loop
+        for (const rule of rules) {
+            let termToMatch = rule.case_sensitive ? rule.term : rule.term.toLowerCase();
+            let contentToCompare = rule.case_sensitive ? content : normalizedContent;
+
+            let isMatch = false;
+            if (rule.is_regex) {
+                try {
+                    const regex = new RegExp(termToMatch, rule.case_sensitive ? '' : 'i'); // 'i' for case-insensitive
+                    isMatch = regex.test(contentToCompare);
+                } catch (e) {
+                    console.error(`Regex error for rule '${rule.term}':`, e);
+                    continue; // Skip this rule if the regex is malformed
+                }
+            } else {
+                isMatch = contentToCompare.includes(termToMatch);
+            }
+
+            if (isMatch) {
+                if (rule.type === 'whitelist') {
+                    whitelistMatch = rule;
+                    // If a whitelist matches, it has absolute precedence to approve
+                    return { actionOverride: rule.action_override || 'approve', ruleMatched: rule };
+                } else if (rule.type === 'blacklist') {
+                    blacklistMatch = rule;
+                    // Continue searching to see if there's a whitelist that overrides a blacklist
+                }
+            }
+        }
+
+        // If no whitelist match, but there is a blacklist match, apply the blacklist
+        if (blacklistMatch) {
+            return { actionOverride: blacklistMatch.action_override || 'block', ruleMatched: blacklistMatch };
+        }
+
+        return { actionOverride: null, ruleMatched: null }; // No rule matched
+    } catch (error: any) {
+        console.error('Unexpected error during custom rules application:', error);
+        return { actionOverride: null, ruleMatched: null };
+    }
+}
+
+
 // --- Main POST Request Handler for /api/moderate ---
 export async function POST(request: NextRequest) {
-    console.log('--- Richiesta Moderazione API Ricevuta ---');
+    console.log('--- Moderation API Request Received ---');
 
     // 1. Authenticate JWT (using the token provided by /api/token)
     const authHeader = request.headers.get('Authorization');
@@ -83,8 +164,8 @@ export async function POST(request: NextRequest) {
     let clientScope: string | null = null;
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        console.warn('Tentativo di accesso non autorizzato: Header Authorization mancante o non valido.');
-        return NextResponse.json({ error: 'unauthorized', message: 'Header Authorization mancante o non valido.' }, {
+        console.warn('Unauthorized access attempt: Missing or invalid Authorization header.');
+        return NextResponse.json({ error: 'unauthorized', message: 'Missing or invalid Authorization header.' }, {
             status: 401,
             headers: { 'Content-Type': 'application/json' },
         });
@@ -93,8 +174,8 @@ export async function POST(request: NextRequest) {
     const token = authHeader.split(' ')[1];
 
     if (!jwtSecret) {
-        console.error('Errore Server: JWT_SECRET non configurato. Impossibile verificare il token. Stato: 500');
-        return NextResponse.json({ error: 'server_error', message: 'Errore di configurazione del server.' }, {
+        console.error('Server Error: JWT_SECRET not configured. Cannot verify token. Status: 500');
+        return NextResponse.json({ error: 'server_error', message: 'Server configuration error.' }, {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
         });
@@ -104,10 +185,10 @@ export async function POST(request: NextRequest) {
         const decoded = jwt.verify(token, jwtSecret) as { client_id: string; scope: string; [key: string]: any };
         clientId = decoded.client_id;
         clientScope = decoded.scope;
-        console.log(`Token verificato. Client ID: ${clientId}, Scope: ${clientScope}`);
+        console.log(`Token verified. Client ID: ${clientId}, Scope: ${clientScope}`);
     } catch (jwtError: any) {
-        console.warn(`Verifica JWT fallita: ${jwtError.message}. Stato: 401`);
-        return NextResponse.json({ error: 'unauthorized', message: 'Token non valido o scaduto.' }, {
+        console.warn(`JWT verification failed: ${jwtError.message}. Status: 401`);
+        return NextResponse.json({ error: 'unauthorized', message: 'Invalid or expired token.' }, {
             status: 401,
             headers: { 'Content-Type': 'application/json' },
         });
@@ -118,29 +199,20 @@ export async function POST(request: NextRequest) {
     try {
         requestBody = await request.json();
     } catch (jsonError: any) {
-        console.error(`Errore durante il parsing del corpo della richiesta per /api/moderate: ${jsonError.message}. Stato: 400`);
-        return NextResponse.json({ error: 'invalid_json', message: 'Il corpo della richiesta deve essere JSON valido.' }, {
+        console.error(`Error parsing request body for /api/moderate: ${jsonError.message}. Status: 400`);
+        return NextResponse.json({ error: 'invalid_json', message: 'Request body must be valid JSON.' }, {
             status: 400,
             headers: { 'Content-Type': 'application/json' },
         });
     }
 
-    const { content, userId } = requestBody; // 'userId' è opzionale
+    const { content, userId } = requestBody;
 
     // 3. Input Validation
     if (!content || typeof content !== 'string') {
-        console.warn('Input non valido: Il campo \'content\' è richiesto e deve essere una stringa. Stato: 400');
-        return NextResponse.json({ error: 'invalid_request', message: 'Il campo \'content\' è richiesto e deve essere una stringa.' }, {
+        console.warn('Invalid input: \'content\' field is required and must be a string. Status: 400');
+        return NextResponse.json({ error: 'invalid_request', message: '\'content\' field is required and must be a string.' }, {
             status: 400,
-            headers: { 'Content-Type': 'application/json' },
-        });
-    }
-
-    // 4. Verify OpenAI client is initialized
-    if (!openai) {
-        console.error('Errore Server: Client OpenAI non inizializzato. Stato: 500');
-        return NextResponse.json({ error: 'server_error', message: 'Servizio di moderazione non disponibile.' }, {
-            status: 500,
             headers: { 'Content-Type': 'application/json' },
         });
     }
@@ -148,42 +220,60 @@ export async function POST(request: NextRequest) {
     let moderationResult: any = null;
     let moderationCategories: string[] = [];
     let moderationScores: { [key: string]: number } = {};
-    let determinedAction = 'unknown'; // Inizializza l'azione determinata
-    let moderationSeverity = 'unknown'; // Inizializza la severità
+    let determinedAction = 'unknown';
+    let moderationSeverity = 'unknown';
+    let ruleMatchedId: string | null = null; // ID of the custom rule that took effect
 
-    try {
-        // 5. Call OpenAI Moderation API
-        const response = await openai.moderations.create({
-            input: content,
-        });
+    // --- NEW LOGIC: Apply Custom Rules ---
+    const { actionOverride, ruleMatched } = await applyCustomRules(content);
 
-        moderationResult = response.results[0]; // Prendi il primo (e unico) risultato
-        console.log('Risultato moderazione OpenAI:', moderationResult);
-
-        // Determina azione e severità in base al risultato di OpenAI
-        const { action: flaggedFromOpenAI, severity, determinedAction: calculatedAction } = determineActionAndSeverity(moderationResult);
-        moderationSeverity = severity;
-        determinedAction = calculatedAction; // Usa l'azione calcolata
-
-        // Estrai le categorie segnalate
-        for (const category in moderationResult.categories) {
-            if (moderationResult.categories[category]) {
-                moderationCategories.push(category);
-            }
+    if (actionOverride) {
+        // A custom rule took effect! We override OpenAI's logic.
+        console.log(`Custom rule '${ruleMatched?.term}' (ID: ${ruleMatched?.id}, Type: ${ruleMatched?.type}) overrode the action: ${actionOverride}`);
+        determinedAction = actionOverride;
+        moderationSeverity = 'custom_rule'; // Label to indicate action is from a custom rule
+        // Mock OpenAI result for logging if the rule overrides
+        moderationResult = { flagged: determinedAction !== 'approved', categories: {}, category_scores: {} };
+        ruleMatchedId = ruleMatched?.id || null;
+    } else {
+        // No custom rule overrode, proceed with OpenAI
+        if (!openai) {
+            console.error('Server Error: OpenAI client not initialized. Status: 500');
+            return NextResponse.json({ error: 'server_error', message: 'Moderation service not available.' }, {
+                status: 500,
+                headers: { 'Content-Type': 'application/json' },
+            });
         }
 
-        // Estrai i punteggi da category_scores
-        moderationScores = moderationResult.category_scores;
+        try {
+            const response = await openai.moderations.create({
+                input: content,
+            });
 
-    } catch (openaiError: any) {
-        console.error(`Errore durante la chiamata all'API di moderazione OpenAI: ${openaiError.message}. Stato: 500`);
-        return NextResponse.json({ error: 'openai_error', message: 'Errore durante la moderazione del contenuto.' }, {
-            status: 500,
-            headers: { 'Content-Type': 'application/json' },
-        });
+            moderationResult = response.results[0];
+            console.log('OpenAI moderation result:', moderationResult);
+
+            const { action: flaggedFromOpenAI, severity, determinedAction: calculatedAction } = determineActionAndSeverity(moderationResult);
+            moderationSeverity = severity;
+            determinedAction = calculatedAction;
+
+            for (const category in moderationResult.categories) {
+                if (moderationResult.categories[category]) {
+                    moderationCategories.push(category);
+                }
+            }
+            moderationScores = moderationResult.category_scores;
+
+        } catch (openaiError: any) {
+            console.error(`Error calling OpenAI moderation API: ${openaiError.message}. Status: 500`);
+            return NextResponse.json({ error: 'openai_error', message: 'Error during content moderation.' }, {
+                status: 500,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }
     }
 
-    // --- LOGGING DELL'OPERAZIONE DI MODERAZIONE SU SUPABASE ---
+    // --- LOGGING THE MODERATION OPERATION TO SUPABASE ---
     if (supabase) {
         try {
             const { error: logError } = await supabase
@@ -192,36 +282,39 @@ export async function POST(request: NextRequest) {
                     client_id: clientId,
                     user_id: userId || null,
                     content: content,
-                    flagged: moderationResult.flagged, // Questo è il booleano di OpenAI
-                    action: determinedAction, // Questo è l'azione determinata dalla tua logica
+                    flagged: moderationResult.flagged,
+                    action: determinedAction,
                     severity: moderationSeverity,
                     categories: moderationCategories,
                     scores: moderationScores,
                     openai_response_raw: moderationResult,
+                    custom_rule_id: ruleMatchedId, // NEW COLUMN
                 });
 
             if (logError) {
-                console.error('Errore durante il logging della moderazione su Supabase:', logError);
+                console.error('Error logging moderation to Supabase:', logError);
             } else {
-                console.log('Log di moderazione salvato con successo su Supabase.');
+                console.log('Moderation log successfully saved to Supabase.');
             }
         } catch (logCatchError: any) {
-            console.error('Errore imprevisto durante il logging su Supabase:', logCatchError);
+            console.error('Unexpected error during Supabase logging:', logCatchError);
         }
     } else {
-        console.warn('Supabase client non disponibile. Impossibile salvare il log di moderazione.');
+        console.warn('Supabase client not available. Cannot save moderation log.');
     }
-    // --- FINE LOGGING ---
+    // --- END LOGGING ---
 
     // 6. Return the moderation result
     return NextResponse.json({
         success: true,
         flagged: moderationResult.flagged,
-        action: determinedAction, // Restituisci l'azione determinata
+        action: determinedAction,
         severity: moderationSeverity,
         categories: moderationCategories,
         scores: moderationScores,
-        message: moderationResult.flagged ? `Contenuto segnalato. Azione raccomandata: ${determinedAction}.` : 'Contenuto approvato.',
+        message: moderationResult.flagged ? `Content flagged. Recommended action: ${determinedAction}.` : 'Content approved.',
+        custom_rule_applied: !!actionOverride,
+        matched_rule_id: ruleMatchedId,
     }, {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
