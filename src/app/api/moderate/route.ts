@@ -76,6 +76,8 @@ interface CustomRule {
     action_override: 'block' | 'approve' | 'manual_review' | 'warn' | null;
     is_regex: boolean;
     case_sensitive: boolean;
+    // Aggiungi qui altre proprietà se esistono nella tua tabella Supabase
+    // es: created_at?: string;
 }
 
 async function applyCustomRules(content: string): Promise<{ actionOverride: string | null; ruleMatched: CustomRule | null }> {
@@ -95,10 +97,10 @@ async function applyCustomRules(content: string): Promise<{ actionOverride: stri
             return { actionOverride: null, ruleMatched: null };
         }
 
-        // TypeScript FIX: Explicitly assert the type of 'data' to CustomRule[]
-        // This tells TypeScript that we expect 'data' (or an empty array if null)
-        // to conform to the CustomRule interface.
-        const rules: CustomRule[] = (data || []) as CustomRule[]; // <--- KEY CORRECTION HERE
+        // TypeScript FIX: Convert to 'unknown' first, then assert to CustomRule[]
+        // This is the most direct way to tell TypeScript to trust your assertion
+        // when its inference is too conservative.
+        const rules: CustomRule[] = (data as unknown as CustomRule[] || []); // <--- KEY CORRECTION HERE
 
         if (rules.length === 0) {
             console.log('No custom moderation rules found.');
